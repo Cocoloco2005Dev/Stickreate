@@ -56,9 +56,25 @@ jobs:
             -scheme Stickreate \
             -configuration Release
 
+      - name: Resolve version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION=""
+          fi
+          echo "MARKETING_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "marketing=${VERSION:-project-default} build=${GITHUB_RUN_NUMBER}"
+
       - name: Archive (unsigned)
         run: |
           set -euo pipefail
+          EXTRA_SETTINGS=("CURRENT_PROJECT_VERSION=${BUILD_NUMBER}")
+          if [ -n "${MARKETING_VERSION}" ]; then
+            EXTRA_SETTINGS+=("MARKETING_VERSION=${MARKETING_VERSION}")
+          fi
           xcodebuild archive \
             -project Stickreate.xcodeproj \
             -scheme Stickreate \
@@ -68,7 +84,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM=""
+            DEVELOPMENT_TEAM="" \
+            "${EXTRA_SETTINGS[@]}"
 
       - name: Package unsigned IPA
         run: |

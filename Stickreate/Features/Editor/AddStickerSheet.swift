@@ -3,8 +3,9 @@ import PhotosUI
 import UniformTypeIdentifiers
 
 /// Sheet for picking photos, videos, or Live Photos and turning them into
-/// stickers. Still photos open `StickerEditorView` so the user can crop and
-/// clean up the background; videos and GIFs run through the automatic pipeline.
+/// stickers. Still photos open `StickerEditorView` to crop and clean up the
+/// background; videos open `VideoTrimView`; GIFs run through the automatic
+/// pipeline. Static and animated stickers may share one pack.
 @MainActor
 struct AddStickerSheet: View {
     let store: PackStore
@@ -15,9 +16,10 @@ struct AddStickerSheet: View {
     @State private var selection: [PhotosPickerItem] = []
     @State private var isProcessing = false
     @State private var errorMessage: String?
+
     @State private var editing: EditTask?
-    @State private var pendingContinuation: CheckedContinuation<UIImage?, Never>?
-    @State private var editedImage: UIImage?
+    @State private var pendingContinuation: CheckedContinuation<Result<StickerItem, Error>?, Never>?
+    @State private var pendingResult: Result<StickerItem, Error>?
 
     private var pack: StickerPack? { store.pack(with: packID) }
 
@@ -44,9 +46,10 @@ struct AddStickerSheet: View {
                 }
         }
         .sheet(item: $editing, onDismiss: editingDismissed) { task in
-            StickerEditorView(item: task.item) { image in
-                editedImage = image
-            }
+            editor(for: task)
+        }
+        .onChange(of: selection) { _, newSelection in
+            autoOpenEditorIfNeeded(newSelection)
         }
         .alert(
             "Something went wrong",
@@ -58,6 +61,20 @@ struct AddStickerSheet: View {
             Button("OK", role: .cancel) { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private func editor(for task: EditTask) -> some View {
+        switch task.kind {
+        case .still(let item):
+            StickerEditorView(item: item) { image in
+                pendingResult = Result { try StickerFactory.encodeStatic(image) }
+            }
+        case .video(let item):
+            VideoTrimView(item: item) { sticker in
+                pendingResult = .success(sticker)
+            }
         }
     }
 
@@ -110,7 +127,7 @@ struct AddStickerSheet: View {
     }
 
     private var helper: some View {
-        Text("Pick up to \(remaining) \(remaining == 1 ? "item" : "items"). Photos open an editor to crop and clean up; videos and GIFs convert automatically.")
+        Text("Pick up to \(remaining) \(remaining == 1 ? "item" : "items"). Photos open an editor to crop and clean up; videos open a trim screen; GIFs convert automatically.")
             .font(.footnote)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
@@ -124,7 +141,9 @@ struct AddStickerSheet: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(Array(selection.enumerated()), id: \.offset) { _, item in
-                        SelectionThumbnail(item: item)
+                        SelectionThumbnail(item: item) {
+                            remove(item)
+                        }
                     }
                 }
                 .padding(.horizontal, 2)
@@ -134,25 +153,16 @@ struct AddStickerSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func remove(_ item: PhotosPickerItem) {
+        selection.removeAll { $0 == item }
+    }
+
     // MARK: - Processing
 
     @MainActor
     private func add() async {
         guard !selection.isEmpty else { return }
 
-        let animatedCount = selection.filter(isAnimated).count
-        let stillCount = selection.count - animatedCount
-
-        // Enforce WhatsApp's no-mixing rule before anything is written.
-        if animatedCount > 0 && stillCount > 0 {
-            errorMessage = StickerPack.ValidationError.mixedKinds.localizedDescription
-            return
-        }
-        let selectionKind: StickerKind = animatedCount > 0 ? .animated : .static
-        if let existing = pack?.kind, existing != selectionKind {
-            errorMessage = StickerPack.ValidationError.mixedKinds.localizedDescription
-            return
-        }
         if selection.count > remaining {
             errorMessage = StickerPack.ValidationError.tooMany(Limits.maxStickers).localizedDescription
             return
@@ -163,14 +173,16 @@ struct AddStickerSheet: View {
 
         for item in selection {
             do {
-                if isAnimated(item) {
+                if isVideo(item) {
+                    // Videos are trimmed by hand; a cancelled trim skips that item.
+                    guard let result = await edit(.video(item)) else { continue }
+                    try apply(result)
+                } else if isGIF(item) {
                     let sticker = try await StickerFactory.makeSticker(from: item)
                     try store.add(sticker, to: packID)
                 } else {
-                    // Stills are hand-edited; a cancelled editor skips that item.
-                    guard let image = await edit(item) else { continue }
-                    let sticker = try StickerFactory.encodeStatic(image)
-                    try store.add(sticker, to: packID)
+                    guard let result = await edit(.still(item)) else { continue }
+                    try apply(result)
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -182,19 +194,44 @@ struct AddStickerSheet: View {
         dismiss()
     }
 
-    private func isAnimated(_ item: PhotosPickerItem) -> Bool {
-        let types = item.supportedContentTypes
-        return types.contains { $0.conforms(to: .movie) }
-            || types.contains { $0.conforms(to: .gif) }
+    private func apply(_ result: Result<StickerItem, Error>) throws {
+        switch result {
+        case .success(let sticker):
+            try store.add(sticker, to: packID)
+        case .failure(let error):
+            throw error
+        }
     }
 
-    /// Presents the editor for one still and suspends until it closes.
+    private func isVideo(_ item: PhotosPickerItem) -> Bool {
+        item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+    }
+
+    private func isGIF(_ item: PhotosPickerItem) -> Bool {
+        item.supportedContentTypes.contains { $0.conforms(to: .gif) }
+    }
+
+    /// A lone still opens its editor right away so the step can't be missed.
+    private func autoOpenEditorIfNeeded(_ items: [PhotosPickerItem]) {
+        guard !isProcessing, editing == nil, remaining > 0,
+              items.count == 1, let item = items.first,
+              !isVideo(item), !isGIF(item) else { return }
+
+        Task {
+            // Let the photo picker finish dismissing before presenting the editor.
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !isProcessing, editing == nil, selection.count == 1 else { return }
+            await add()
+        }
+    }
+
+    /// Presents the matching editor and suspends until it closes.
     @MainActor
-    private func edit(_ item: PhotosPickerItem) async -> UIImage? {
+    private func edit(_ kind: EditTask.Kind) async -> Result<StickerItem, Error>? {
         await withCheckedContinuation { continuation in
-            editedImage = nil
+            pendingResult = nil
             pendingContinuation = continuation
-            editing = EditTask(item: item)
+            editing = EditTask(kind: kind)
         }
     }
 
@@ -202,31 +239,65 @@ struct AddStickerSheet: View {
     private func editingDismissed() {
         guard let continuation = pendingContinuation else { return }
         pendingContinuation = nil
-        let result = editedImage
-        editedImage = nil
+        let result = pendingResult
+        pendingResult = nil
         continuation.resume(returning: result)
     }
 
     private struct EditTask: Identifiable {
+        enum Kind {
+            case still(PhotosPickerItem)
+            case video(PhotosPickerItem)
+        }
+
         let id = UUID()
-        let item: PhotosPickerItem
+        let kind: Kind
     }
 }
 
-/// Small opaque preview of a picked item. Content layer — never glass.
+/// Small opaque preview of a picked item with a remove control.
+/// Content layer — never glass.
 private struct SelectionThumbnail: View {
     let item: PhotosPickerItem
+    let onRemove: () -> Void
 
     @State private var image: UIImage?
     @State private var didLoad = false
 
-    private var isAnimated: Bool {
-        let types = item.supportedContentTypes
-        return types.contains { $0.conforms(to: .movie) }
-            || types.contains { $0.conforms(to: .gif) }
+    private var isVideo: Bool {
+        item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+    }
+
+    private var isGIF: Bool {
+        item.supportedContentTypes.contains { $0.conforms(to: .gif) }
+    }
+
+    private var selectionLabel: String {
+        if isVideo { return "Video selected" }
+        if isGIF { return "GIF selected" }
+        return "Photo selected"
+    }
+
+    private var removeLabel: String {
+        if isVideo { return "Remove video" }
+        if isGIF { return "Remove GIF" }
+        return "Remove photo"
     }
 
     var body: some View {
+        ZStack(alignment: .topTrailing) {
+            preview
+            removeButton
+        }
+        .frame(width: 76, height: 76)
+        .task {
+            guard !didLoad, !isVideo, !isGIF else { return }
+            didLoad = true
+            image = await Self.loadThumbnail(item)
+        }
+    }
+
+    private var preview: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Color(uiColor: .secondarySystemBackground))
             .frame(width: 76, height: 76)
@@ -236,14 +307,14 @@ private struct SelectionThumbnail: View {
                         .resizable()
                         .scaledToFill()
                 } else {
-                    Image(systemName: isAnimated ? "film" : "photo")
+                    Image(systemName: isVideo || isGIF ? "film" : "photo")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(alignment: .bottomLeading) {
-                if isAnimated {
+                if isVideo || isGIF {
                     Image(systemName: "play.fill")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.white)
@@ -254,12 +325,24 @@ private struct SelectionThumbnail: View {
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(isAnimated ? "Video or GIF selected" : "Photo selected")
-            .task {
-                guard !didLoad, !isAnimated else { return }
-                didLoad = true
-                image = await Self.loadThumbnail(item)
-            }
+            .accessibilityLabel(selectionLabel)
+    }
+
+    private var removeButton: some View {
+        Button(action: onRemove) {
+            Color.clear
+                .frame(width: 44, height: 44)
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: "xmark.circle.fill")
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .black.opacity(0.55))
+                        .font(.title3)
+                        .padding(4)
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(removeLabel)
     }
 
     private static func loadThumbnail(_ item: PhotosPickerItem) async -> UIImage? {

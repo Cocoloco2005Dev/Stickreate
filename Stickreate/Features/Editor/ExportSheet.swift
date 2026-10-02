@@ -1,27 +1,29 @@
 import SwiftUI
 import UIKit
 
-/// Confirms and hands a finished pack to WhatsApp. Exactly one prominent action:
-/// "Add to WhatsApp", tinted green because green means WhatsApp here.
+/// Confirms and hands a finished pack to WhatsApp. A single-kind pack exports
+/// with one prominent action; a mixed pack exports its static and animated
+/// subsets separately, because WhatsApp can't take both in one pack.
 struct ExportSheet: View {
     let pack: StickerPack
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var exported = false
+    @State private var exportedKinds: Set<StickerKind> = []
     @State private var errorMessage: String?
 
     @MainActor private var isWhatsAppInstalled: Bool { WhatsAppExporter.isWhatsAppInstalled }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                preview
-                header
-                Spacer(minLength: 0)
-                actions
+            ScrollView {
+                VStack(spacing: 24) {
+                    preview
+                    header
+                    actions
+                }
+                .padding(24)
             }
-            .padding(24)
             .navigationTitle("Add to WhatsApp")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -87,51 +89,140 @@ struct ExportSheet: View {
     }
 
     private var statusLine: String {
+        if pack.isMixed {
+            return "\(pack.staticStickers.count) static · \(pack.animatedStickers.count) animated"
+        }
         let count = pack.stickers.count
         let kind = pack.kind?.label.lowercased() ?? "sticker"
         return "\(count) \(kind) \(count == 1 ? "sticker" : "stickers") · ready to add"
     }
 
+    // MARK: - Actions
+
     @MainActor
     @ViewBuilder
     private var actions: some View {
-        if exported {
-            Label("Added to WhatsApp", systemImage: "checkmark.circle.fill")
-                .font(.headline)
-                .foregroundStyle(.green)
-                .accessibilityLabel("Added to WhatsApp")
+        if pack.isMixed {
+            mixedActions
         } else {
-            VStack(spacing: 12) {
+            singleAction
+        }
+    }
+
+    @MainActor
+    private var singleAction: some View {
+        VStack(spacing: 12) {
+            if exportedKinds.contains(pack.kind ?? .static) {
+                addedLabel("Added to WhatsApp")
+            } else {
                 Button {
-                    export()
+                    export(stickers: pack.stickers, kind: pack.kind ?? .static)
                 } label: {
                     Label("Add to WhatsApp", systemImage: "plus.message")
                 }
                 .buttonStyle(.glassProminent)
                 .tint(.green)
-
-                if !isWhatsAppInstalled {
-                    Text("If WhatsApp doesn't open, open it once and try again.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
+                .disabled(pack.stickers.isEmpty)
             }
+
+            whatsAppFootnote
         }
     }
 
     @MainActor
-    private func export() {
+    private var mixedActions: some View {
+        VStack(spacing: 12) {
+            exportButton(kind: .static, stickers: pack.staticStickers)
+            exportButton(kind: .animated, stickers: pack.animatedStickers)
+            whatsAppFootnote
+        }
+    }
+
+    @MainActor
+    private func exportButton(kind: StickerKind, stickers: [StickerItem]) -> some View {
+        let count = stickers.count
+        let isShort = count < Limits.minStickers
+        let isExported = exportedKinds.contains(kind)
+
+        return VStack(spacing: 6) {
+            if isExported {
+                addedLabel("Added \(kind.label.lowercased()) pack")
+            } else {
+                Button {
+                    export(stickers: stickers, kind: kind)
+                } label: {
+                    Label("Add \(kind.label.lowercased()) pack (\(count))", systemImage: symbol(for: kind))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glass)
+                .tint(.green)
+                .disabled(isShort)
+                .accessibilityHint(
+                    isShort
+                        ? "Needs at least \(Limits.minStickers) stickers"
+                        : "Adds this pack to WhatsApp"
+                )
+            }
+
+            if isShort {
+                Text("\(kind.label) needs at least \(Limits.minStickers) stickers.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func addedLabel(_ title: String) -> some View {
+        Label(title, systemImage: "checkmark.circle.fill")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.green)
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel(title)
+    }
+
+    @MainActor
+    @ViewBuilder
+    private var whatsAppFootnote: some View {
+        if !isWhatsAppInstalled {
+            Text("If WhatsApp doesn't open, open it once and try again.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    private func symbol(for kind: StickerKind) -> String {
+        kind == .animated ? "play.rectangle" : "photo"
+    }
+
+    @MainActor
+    private func export(stickers: [StickerItem], kind: StickerKind) {
         do {
-            try WhatsAppExporter.export(pack)
-            withAnimation { exported = true }
-            Task {
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                dismiss()
+            try WhatsAppExporter.export(
+                stickers: stickers,
+                kind: kind,
+                name: pack.name,
+                publisher: pack.publisher,
+                identifier: identifier(for: kind)
+            )
+            withAnimation { _ = exportedKinds.insert(kind) }
+
+            // Single-kind packs are done; mixed packs stay open so the other
+            // subset can be added too.
+            if !pack.isMixed {
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    dismiss()
+                }
             }
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Distinct identifier per subset so WhatsApp doesn't merge them.
+    private func identifier(for kind: StickerKind) -> String {
+        pack.isMixed ? "\(pack.id.uuidString)-\(kind.rawValue)" : pack.id.uuidString
     }
 }
 

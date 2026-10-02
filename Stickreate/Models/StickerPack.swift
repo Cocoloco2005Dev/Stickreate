@@ -23,6 +23,20 @@ struct StickerPack: Identifiable, Hashable, Codable, Sendable {
         stickers.first?.kind
     }
 
+    /// True when the pack holds both static and animated stickers. WhatsApp can't
+    /// import a mixed pack, so the exporter splits it by kind.
+    var isMixed: Bool {
+        Set(stickers.map(\.kind)).count > 1
+    }
+
+    var staticStickers: [StickerItem] {
+        stickers.filter { $0.kind == .static }
+    }
+
+    var animatedStickers: [StickerItem] {
+        stickers.filter { $0.kind == .animated }
+    }
+
     /// The sticker shown in WhatsApp's tray picker.
     var traySourcePreview: Data? {
         stickers.first?.previewData
@@ -45,15 +59,18 @@ struct StickerPack: Identifiable, Hashable, Codable, Sendable {
         }
     }
 
+    /// A pack may hold up to 30 stickers. It may mix static and animated
+    /// stickers, but every non-empty kind group must still reach WhatsApp's
+    /// minimum of 3 — the exporter then splits the pack by kind.
     func validate() throws {
-        if stickers.count < Limits.minStickers {
-            throw ValidationError.tooFew(Limits.minStickers)
-        }
         if stickers.count > Limits.maxStickers {
             throw ValidationError.tooMany(Limits.maxStickers)
         }
-        if Set(stickers.map(\.kind)).count > 1 {
-            throw ValidationError.mixedKinds
+        if !staticStickers.isEmpty && staticStickers.count < Limits.minStickers {
+            throw ValidationError.tooFew(Limits.minStickers)
+        }
+        if !animatedStickers.isEmpty && animatedStickers.count < Limits.minStickers {
+            throw ValidationError.tooFew(Limits.minStickers)
         }
     }
 }

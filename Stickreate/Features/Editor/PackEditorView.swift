@@ -28,7 +28,13 @@ struct PackEditorView: View {
 
     private var canExport: Bool {
         guard let pack else { return false }
-        return (try? pack.validate()) != nil
+        // Mixed packs export one subset at a time, so it's exportable when
+        // either subset alone meets the minimum.
+        if pack.isMixed {
+            return pack.staticStickers.count >= Limits.minStickers
+                || pack.animatedStickers.count >= Limits.minStickers
+        }
+        return pack.stickers.count >= Limits.minStickers
     }
 
     var body: some View {
@@ -133,9 +139,14 @@ struct PackEditorView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header(for: pack)
 
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(pack.stickers) { item in
-                        StickerCell(item: item, store: store, packID: packID)
+                if pack.isMixed {
+                    stickerSection("Static", items: pack.staticStickers)
+                    stickerSection("Animated", items: pack.animatedStickers)
+                } else {
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        ForEach(pack.stickers) { item in
+                            StickerCell(item: item, store: store, packID: packID)
+                        }
                     }
                 }
             }
@@ -143,11 +154,35 @@ struct PackEditorView: View {
         }
     }
 
+    @ViewBuilder
+    private func stickerSection(_ title: String, items: [StickerItem]) -> some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(items) { item in
+                        StickerCell(item: item, store: store, packID: packID)
+                    }
+                }
+            }
+        }
+    }
+
     private func header(for pack: StickerPack) -> some View {
-        HStack(spacing: 8) {
-            Label(kindLabel(for: pack), systemImage: kindSymbol(for: pack))
-            Spacer()
-            Text("\(pack.stickers.count) of \(Limits.maxStickers)")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Label(kindLabel(for: pack), systemImage: kindSymbol(for: pack))
+                Spacer()
+                Text("\(pack.stickers.count) of \(Limits.maxStickers)")
+            }
+
+            if pack.isMixed {
+                Text("\(pack.staticStickers.count) static · \(pack.animatedStickers.count) animated")
+                    .font(.caption)
+            }
         }
         .font(.subheadline)
         .foregroundStyle(.secondary)
@@ -155,16 +190,20 @@ struct PackEditorView: View {
     }
 
     private func kindLabel(for pack: StickerPack) -> String {
-        pack.kind?.label ?? "Empty"
+        if pack.isMixed { return "Mixed" }
+        return pack.kind?.label ?? "Empty"
     }
 
     private func kindSymbol(for pack: StickerPack) -> String {
-        pack.kind == .animated ? "play.rectangle" : "photo"
+        if pack.isMixed { return "square.grid.2x2" }
+        return pack.kind == .animated ? "play.rectangle" : "photo"
     }
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .bottomBar) {
+        // Deliberately NOT `.bottomBar`: this screen lives inside a TabView, and
+        // iOS 26's floating glass tab bar covers the navigation bottom bar there.
+        ToolbarItem(placement: .topBarTrailing) {
             Button {
                 showingAdd = true
             } label: {

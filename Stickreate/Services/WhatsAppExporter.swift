@@ -29,11 +29,41 @@ enum WhatsAppExporter {
         return UIApplication.shared.canOpenURL(url)
     }
 
-    /// Validates the pack, builds the tray icon, writes the pasteboard and opens WhatsApp.
+    /// Validates a single-kind pack and exports it.
+    ///
+    /// Mixed packs can't be imported by WhatsApp in one go; callers should export
+    /// `pack.staticStickers` and `pack.animatedStickers` separately through
+    /// `export(stickers:kind:name:publisher:identifier:)`.
     static func export(_ pack: StickerPack) throws {
         try pack.validate()
+        guard !pack.isMixed else {
+            throw Failure.invalid("This pack mixes static and animated stickers. Export each kind separately.")
+        }
+        guard let kind = pack.kind else {
+            throw Failure.invalid("This pack has no stickers.")
+        }
+        try export(
+            stickers: pack.stickers,
+            kind: kind,
+            name: pack.name,
+            publisher: pack.publisher,
+            identifier: pack.id.uuidString
+        )
+    }
 
-        guard let first = pack.stickers.first else {
+    /// Builds and imports a single-kind WhatsApp pack from `stickers`.
+    ///
+    /// `identifier` is sanitized to WhatsApp's accepted charset and
+    /// `animated_sticker_pack` is set only for `kind == .animated`. The tray icon
+    /// comes from the first sticker's `previewData`.
+    static func export(
+        stickers: [StickerItem],
+        kind: StickerKind,
+        name: String,
+        publisher: String,
+        identifier: String
+    ) throws {
+        guard let first = stickers.first else {
             throw Failure.invalid("This pack has no stickers.")
         }
         guard let preview = UIImage(data: first.previewData) else {
@@ -43,22 +73,22 @@ enum WhatsAppExporter {
             throw Failure.invalid("Couldn't build this pack's tray icon.")
         }
 
-        let isAnimated = pack.kind == .animated
-        let stickers: [[String: Any]] = pack.stickers.map { sticker in
+        let isAnimated = kind == .animated
+        let stickerJSON: [[String: Any]] = stickers.map { sticker in
             [
                 "image_data": sticker.stickerData.base64EncodedString(),
                 "emojis": Array(sticker.emojis.prefix(Limits.maxEmojisPerSticker)),
                 // WhatsApp caps accessibility text at 125 (static) / 255 (animated).
-                "accessibility_text": String(pack.name.prefix(isAnimated ? 255 : 125))
+                "accessibility_text": String(name.prefix(isAnimated ? 255 : 125))
             ]
         }
 
         var payload: [String: Any] = [
-            "identifier": sanitized(pack.id.uuidString, max: 128),
-            "name": String(pack.name.prefix(128)),
-            "publisher": String(pack.publisher.prefix(128)),
+            "identifier": sanitized(identifier, max: 128),
+            "name": String(name.prefix(128)),
+            "publisher": String(publisher.prefix(128)),
             "tray_image": trayPNG.base64EncodedString(),
-            "stickers": stickers
+            "stickers": stickerJSON
         ]
         if isAnimated {
             payload["animated_sticker_pack"] = true

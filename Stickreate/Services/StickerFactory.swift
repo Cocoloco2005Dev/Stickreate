@@ -75,6 +75,23 @@ enum StickerFactory {
         return StickerItem(kind: .static, emojis: [], stickerData: stickerData, previewData: previewData)
     }
 
+    /// Loads a picked movie into a temporary file and reports its duration.
+    /// The temporary copy stays valid until the sticker is created.
+    static func loadVideoDraft(from item: PhotosPickerItem) async throws -> VideoDraft {
+        let url = try await movieURL(from: item)
+        return try await FrameExtractor.videoDraft(from: url)
+    }
+
+    /// Builds an animated sticker from a trimmed video range at the given fps.
+    static func makeAnimatedSticker(
+        from draft: VideoDraft,
+        range: ClosedRange<TimeInterval>,
+        fps: Double
+    ) async throws -> StickerItem {
+        let frames = try await FrameExtractor.frames(fromVideoAt: draft.url, range: range, fps: fps)
+        return try await makeAnimated(from: frames)
+    }
+
     private static func makeAnimated(from frames: [Frame]) async throws -> StickerItem {
         guard !frames.isEmpty else { throw Failure.empty }
 
