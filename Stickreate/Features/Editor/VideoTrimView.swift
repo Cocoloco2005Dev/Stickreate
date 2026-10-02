@@ -3,11 +3,11 @@ import UIKit
 import AVKit
 import AVFoundation
 
-/// Trims a video source and turns it into an animated sticker.
+/// Trims a video source, then asks whether to keep or cut the background.
 ///
-/// A real AVKit preview shows the clip; dragging a trim handle pauses and seeks
-/// the player frame-accurately while a crisp still at the playhead is fetched
-/// with `FrameExtractor`. The final encode keeps the source so the sticker stays
+/// The trim screen is a dark editor: a full-bleed preview plus a bottom filmstrip
+/// of real frames with a white selection window. "Next" moves to an explicit
+/// background choice; "Apply" creates the sticker, keeping the source so it stays
 /// re-editable.
 @MainActor
 struct VideoTrimView: View {
@@ -15,6 +15,13 @@ struct VideoTrimView: View {
     let onDone: (StickerItem) -> Void
 
     @Environment(\.dismiss) private var dismiss
+
+    private enum Step: Hashable {
+        case trim
+        case background
+    }
+
+    @State private var step: Step = .trim
 
     @State private var draft: VideoDraft?
     @State private var isLoading = true
@@ -30,7 +37,12 @@ struct VideoTrimView: View {
     @State private var playheadImage: UIImage?
     @State private var scrubTask: Task<Void, Never>?
 
+    @State private var filmstrip: [UIImage] = []
+
+    @State private var backgroundChoice: StickerBackgroundChoice = .original
+
     @State private var isCreating = false
+    @State private var conversionProgress: Double = 0
     @State private var errorMessage: String?
 
     private static let fpsOptions = [5, 10, 15, 20, 24, 30]
@@ -48,20 +60,11 @@ struct VideoTrimView: View {
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Trim Video")
+                .navigationTitle(step == .trim ? "Trim" : "Background")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
-                            .disabled(isCreating)
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Create") { create() }
-                            .buttonStyle(.glassProminent)
-                            .disabled(draft == nil || isCreating || clipLength <= 0)
-                    }
-                }
+                .toolbar { toolbarContent }
         }
+        .preferredColorScheme(.dark)
         .task { await load() }
         .onDisappear { player?.pause() }
         .alert(
@@ -77,17 +80,51 @@ struct VideoTrimView: View {
         }
     }
 
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button {
+                goBack()
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(isCreating)
+            .accessibilityLabel(step == .background ? "Back to trim" : "Back")
+        }
+
+        ToolbarItem(placement: .confirmationAction) {
+            Button(step == .trim ? "Next" : "Apply") {
+                if step == .trim {
+                    step = .background
+                } else {
+                    apply()
+                }
+            }
+            .tint(.blue)
+            .disabled(draft == nil || isCreating || (step == .trim && clipLength <= 0))
+        }
+    }
+
     // MARK: - Content
 
     @ViewBuilder
     private var content: some View {
         if let draft {
-            if isCreating {
-                ProgressView("Creating sticker…")
-                    .controlSize(.large)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                controls(for: draft)
+            ZStack {
+                switch step {
+                case .trim:
+                    trimScreen(for: draft)
+
+                case .background:
+                    BackgroundChoiceView(previewImage: playheadImage, choice: $backgroundChoice)
+                        .background(Color(uiColor: .systemBackground))
+                }
+
+                if isCreating {
+                    creatingOverlay
+                }
             }
         } else if isLoading {
             ProgressView("Loading video…")
@@ -105,28 +142,15 @@ struct VideoTrimView: View {
         }
     }
 
-    private func controls(for draft: VideoDraft) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                previewCard
-
-                TrimRangeSlider(
-                    duration: draft.duration,
-                    minSpan: min(0.2, draft.duration),
-                    maxSpan: min(Limits.maxAnimationDuration, draft.duration),
-                    lower: $lowerBound,
-                    upper: $upperBound,
-                    onScrub: { time in scrub(to: time) }
-                )
-
-                rangeSummary(for: draft)
-                fpsControl
-            }
-            .padding(20)
+    private func trimScreen(for draft: VideoDraft) -> some View {
+        VStack(spacing: 0) {
+            previewArea
+            bottomPanel(for: draft)
         }
+        .background(Color.black.ignoresSafeArea())
     }
 
-    private var previewCard: some View {
+    private var previewArea: some View {
         ZStack {
             Color.black
 
@@ -141,48 +165,46 @@ struct VideoTrimView: View {
                     .tint(.white)
             }
         }
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(alignment: .bottomTrailing) {
-            Button {
-                togglePlayback()
-            } label: {
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(.black.opacity(0.5), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .padding(8)
-            .accessibilityLabel(isPlaying ? "Pause preview" : "Play preview")
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { togglePlayback() }
+        .accessibilityElement()
+        .accessibilityLabel("Video preview")
+        .accessibilityHint("Double tap to play or pause")
     }
 
-    private func rangeSummary(for draft: VideoDraft) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            LabeledContent("Trim", value: "\(seconds(lowerBound)) – \(seconds(upperBound)) s")
-            LabeledContent("Clip length", value: "\(seconds(clipLength)) s")
+    private func bottomPanel(for draft: VideoDraft) -> some View {
+        VStack(spacing: 14) {
+            fpsControl
 
-            if draft.duration > Limits.maxAnimationDuration {
-                Text("WhatsApp caps animated stickers at \(Int(Limits.maxAnimationDuration)) s, so the clip is limited to that.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            FilmstripView(
+                thumbnails: filmstrip,
+                duration: draft.duration,
+                minSpan: min(0.2, draft.duration),
+                maxSpan: min(Limits.maxAnimationDuration, draft.duration),
+                lower: $lowerBound,
+                upper: $upperBound,
+                onScrub: { time in scrub(to: time) }
+            )
         }
-        .font(.subheadline)
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+        .background(Color.black)
     }
 
     private var fpsControl: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(spacing: 8) {
             HStack {
                 Text("Frame rate")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("\(fps) fps")
+                Text("\(fps) fps · ≈ \(estimatedFrames) frames")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
 
             Picker("Frame rate", selection: $fps) {
@@ -194,15 +216,41 @@ struct VideoTrimView: View {
             .accessibilityLabel("Frame rate")
             .accessibilityValue(Text("\(fps) frames per second"))
 
-            Text("≈ \(estimatedFrames) frames")
-                .font(.footnote)
+            Text("WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so the app compresses and may reduce frames.")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
-                .monospacedDigit()
-
-            Text("More frames per second looks smoother — like a good GIF — but WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so it compresses and may reduce frames automatically.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var creatingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+
+            VStack(spacing: 14) {
+                ProgressView()
+                    .tint(.white)
+                Text(creatingLabel)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .monospacedDigit()
+            }
+            .padding(28)
+            .background(
+                Color.black.opacity(0.72),
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            )
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(creatingLabel)
+    }
+
+    private var creatingLabel: String {
+        let percent = Int((conversionProgress * 100).rounded())
+        return backgroundChoice == .aiCut
+            ? "Removing background… \(percent)%"
+            : "Converting… \(percent)%"
     }
 
     // MARK: - Loading
@@ -230,6 +278,7 @@ struct VideoTrimView: View {
 
             isLoading = false
             scrub(to: lowerBound)
+            loadFilmstrip(for: loaded)
         } catch {
             isLoading = false
             loadErrorMessage = error.localizedDescription
@@ -241,6 +290,25 @@ struct VideoTrimView: View {
         loadErrorMessage = nil
         isLoading = true
         Task { await load() }
+    }
+
+    /// Streams filmstrip frames in the background; the UI never waits on them.
+    private func loadFilmstrip(for draft: VideoDraft) {
+        let url = sourceURL
+        let duration = draft.duration
+        let count = 16
+
+        Task {
+            var frames: [UIImage] = []
+            for index in 0..<count {
+                let time = duration * (Double(index) + 0.5) / Double(count)
+                guard let image = try? await FrameExtractor.thumbnail(fromVideoAt: url, at: time) else {
+                    continue
+                }
+                frames.append(image)
+                filmstrip = frames
+            }
+        }
     }
 
     // MARK: - Preview / playhead
@@ -286,13 +354,23 @@ struct VideoTrimView: View {
         }
     }
 
-    // MARK: - Create
+    // MARK: - Actions
+
+    private func goBack() {
+        if step == .background {
+            step = .trim
+        } else {
+            dismiss()
+        }
+    }
 
     @MainActor
-    private func create() {
+    private func apply() {
         guard let draft, clipLength > 0 else { return }
         let range = lowerBound...upperBound
+        let removeBackground = backgroundChoice == .aiCut
         isCreating = true
+        conversionProgress = 0
         player?.pause()
         isPlaying = false
 
@@ -302,7 +380,12 @@ struct VideoTrimView: View {
                     from: draft,
                     range: range,
                     fps: Double(fps),
-                    source: source
+                    removeBackground: removeBackground,
+                    source: source,
+                    // Documented as a 0...1 callback on the main queue.
+                    onProgress: { fraction in
+                        conversionProgress = fraction
+                    }
                 )
                 isCreating = false
                 onDone(sticker)
@@ -313,14 +396,12 @@ struct VideoTrimView: View {
             }
         }
     }
-
-    private func seconds(_ value: TimeInterval) -> String {
-        String(format: "%.1f", value)
-    }
 }
 
-/// Two-handle range control over a duration. Content layer — never glass.
-private struct TrimRangeSlider: View {
+/// Continuous strip of real frames with a white selection window and two thick
+/// vertical handles. Content layer — never glass.
+private struct FilmstripView: View {
+    let thumbnails: [UIImage]
     let duration: TimeInterval
     let minSpan: TimeInterval
     let maxSpan: TimeInterval
@@ -335,6 +416,8 @@ private struct TrimRangeSlider: View {
         case upper
     }
 
+    private let stripHeight: CGFloat = 64
+
     var body: some View {
         GeometryReader { proxy in
             let width = max(1, proxy.size.width)
@@ -342,18 +425,36 @@ private struct TrimRangeSlider: View {
             let upperX = x(for: upper, width: width)
 
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color(uiColor: .secondarySystemFill))
-                    .frame(height: 6)
+                frames
+                    .frame(width: width, height: stripHeight)
+                    .clipped()
 
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(width: max(0, upperX - lowerX), height: 6)
+                // Frames outside the range stay visible but dimmed.
+                Path { path in
+                    path.addRect(CGRect(x: 0, y: 0, width: width, height: stripHeight))
+                    path.addRoundedRect(
+                        in: CGRect(
+                            x: lowerX,
+                            y: 0,
+                            width: max(0, upperX - lowerX),
+                            height: stripHeight
+                        ),
+                        cornerSize: CGSize(width: 8, height: 8)
+                    )
+                }
+                .fill(Color.black.opacity(0.55), style: FillStyle(eoFill: true))
+                .allowsHitTesting(false)
+
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white, lineWidth: 3)
+                    .frame(width: max(0, upperX - lowerX), height: stripHeight)
                     .offset(x: lowerX)
+                    .allowsHitTesting(false)
 
-                handle.position(x: lowerX, y: proxy.size.height / 2)
-                handle.position(x: upperX, y: proxy.size.height / 2)
+                handleBar.position(x: lowerX, y: stripHeight / 2)
+                handleBar.position(x: upperX, y: stripHeight / 2)
             }
+            .frame(width: width, height: stripHeight)
             .contentShape(Rectangle())
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
@@ -365,11 +466,13 @@ private struct TrimRangeSlider: View {
                         }
                         let proposed = time(for: value.location.x, width: width)
                         switch activeHandle {
-                        case .lower: lower = clampedLower(proposed)
-                        case .upper: upper = clampedUpper(proposed)
-                        case nil: break
+                        case .lower:
+                            lower = clampedLower(proposed)
+                        case .upper:
+                            upper = clampedUpper(proposed)
+                        case nil:
+                            break
                         }
-
                         if let handle = activeHandle {
                             onScrub(handle == .lower ? lower : upper)
                         }
@@ -377,11 +480,11 @@ private struct TrimRangeSlider: View {
                     .onEnded { _ in activeHandle = nil }
             )
         }
-        .frame(height: 44)
+        .frame(height: stripHeight)
         .accessibilityElement()
         .accessibilityLabel("Trim range")
         .accessibilityValue(Text("\(seconds(lower)) to \(seconds(upper)) seconds"))
-        .accessibilityHint("Drag the handles to choose the clip")
+        .accessibilityHint("Drag the white handles to choose the clip")
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment:
@@ -390,16 +493,39 @@ private struct TrimRangeSlider: View {
             case .decrement:
                 upper = clampedUpper(upper - 0.5)
                 onScrub(upper)
-            @unknown default: break
+            @unknown default:
+                break
             }
         }
     }
 
-    private var handle: some View {
-        Circle()
-            .fill(Color(uiColor: .systemBackground))
-            .frame(width: 28, height: 28)
-            .overlay(Circle().stroke(Color.accentColor, lineWidth: 3))
+    @ViewBuilder
+    private var frames: some View {
+        if thumbnails.isEmpty {
+            HStack(spacing: 0) {
+                ForEach(0..<12, id: \.self) { _ in
+                    Rectangle()
+                        .fill(Color(uiColor: .secondarySystemFill))
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        } else {
+            HStack(spacing: 0) {
+                ForEach(Array(thumbnails.enumerated()), id: \.offset) { _, image in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: stripHeight)
+                        .clipped()
+                }
+            }
+        }
+    }
+
+    private var handleBar: some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Color.white)
+            .frame(width: 10, height: stripHeight)
             .shadow(radius: 2)
             .accessibilityHidden(true)
     }

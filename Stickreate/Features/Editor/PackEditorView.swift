@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 /// Editor for one pack. A numbered slot grid with per-tile menus, drag to
 /// reorder, and edit/emoji/cover/duplicate/delete actions. The grid is content
@@ -18,7 +17,6 @@ struct PackEditorView: View {
 
     @State private var editTask: EditTask?
     @State private var emojiTarget: StickerItem?
-    @State private var editError: String?
 
     @State private var showingFolder = false
     @State private var shareItem: ShareItem?
@@ -78,7 +76,7 @@ struct PackEditorView: View {
                     ExportSheet(pack: pack)
                 }
             }
-            .sheet(item: $editTask, onDismiss: surfaceEditError) { task in
+            .sheet(item: $editTask) { task in
                 editSheet(for: task)
             }
             .sheet(item: $emojiTarget) { item in
@@ -272,8 +270,8 @@ struct PackEditorView: View {
         switch task {
         case .staticSticker(let sticker):
             if let source = sticker.source {
-                StickerEditorView(source: source) { image in
-                    encodeAndUpdate(image, source: source)
+                StickerEditorView(source: source) { updated in
+                    store.updateSticker(updated, in: packID)
                 }
             }
 
@@ -284,21 +282,6 @@ struct PackEditorView: View {
                 }
             }
         }
-    }
-
-    private func encodeAndUpdate(_ image: UIImage, source: StickerSource) {
-        do {
-            let updated = try StickerFactory.encodeStatic(image, source: source)
-            store.updateSticker(updated, in: packID)
-        } catch {
-            editError = error.localizedDescription
-        }
-    }
-
-    private func surfaceEditError() {
-        guard let message = editError else { return }
-        editError = nil
-        activeAlert = .error(message)
     }
 
     // MARK: - Toolbar

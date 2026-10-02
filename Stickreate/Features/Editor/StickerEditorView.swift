@@ -1,14 +1,16 @@
 import SwiftUI
 import UIKit
 
-/// Focused editor for a single still image, laid out like the iOS markup editor:
-/// a square canvas on a checkerboard, a bottom tool row (Crop, Remove Background,
-/// Erase, Restore), and a contextual row for the active tool. Cancel sits on the
-/// left of the nav bar, Done (the single prominent action) on the right.
+/// "Adjust" editor for a single still image.
+///
+/// A checkerboard canvas with pinch-to-zoom / drag-to-pan sits above a control
+/// layer: a 2×3 tool grid and a plain-text action bar (Cancel · undo/redo ·
+/// Apply). Editing is non-destructive through `MaskEditor`; nothing is removed
+/// until the user asks for it — the default tool is Full (keep everything).
 @MainActor
 struct StickerEditorView: View {
     let source: StickerSource
-    let onDone: (UIImage) -> Void
+    let onDone: (StickerItem) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -17,281 +19,446 @@ struct StickerEditorView: View {
     @State private var didLoad = false
     @State private var loadErrorMessage: String?
 
-    private enum Tool: Equatable {
-        case crop
-        case erase
-        case restore
-    }
-
-    @State private var activeTool: Tool?
+    @State private var activeTool: Tool = .full
+    @State private var hasCommittedChange = false
+    /// Mirrors the editor's background mode so switching to Full only counts
+    /// as a change when something was actually removed.
     @State private var backgroundRemoved = false
 
-    @State private var cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
-    @State private var cropDragging = false
-    @State private var cropActiveHandle: CropHandle?
-    @State private var cropInitialRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+    // Canvas transform
+    @State private var zoom: CGFloat = 1
+    @State private var zoomStart: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var panStart: CGSize = .zero
+    @State private var panning = false
+    @State private var magnifying = false
+    @State private var showZoomHint = true
 
+    // Brush
     @State private var lastPoint: CGPoint?
+
+    // Selection tools (normalized image coordinates, top-left origin)
+    @State private var selectionStart: CGPoint?
+    @State private var selectionRect: CGRect?
+    @State private var lassoPoints: [CGPoint] = []
+
+    // AI Cut
+    @State private var isRemoving = false
+    @State private var removalProgress: Double = 0
+
+    @State private var alertMessage: String?
+
+    private let maxZoom: CGFloat = 5
+
+    // MARK: - Body
 
     var body: some View {
         NavigationStack {
-            content
-                .navigationTitle("Edit Sticker")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { toolbarContent }
-                .safeAreaInset(edge: .bottom) {
-                    if editor != nil {
-                        bottomControls
+            Group {
+                if let editor {
+                    canvas(editor)
+                } else if isLoading {
+                    ProgressView("Preparing photo…")
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView {
+                        Label("Couldn't Open This Photo", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(loadErrorMessage ?? "Try choosing a different photo.")
+                    } actions: {
+                        Button("Try Again") { retry() }
+                        Button("Cancel", role: .cancel) { dismiss() }
                     }
                 }
+            }
+            .navigationTitle("Adjust")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(true)
+            .safeAreaInset(edge: .bottom) {
+                if editor != nil {
+                    controlLayer
+                }
+            }
+            .overlay {
+                if isRemoving {
+                    removalOverlay
+                }
+            }
+            .alert("Something went wrong", isPresented: alertBinding) {
+                Button("OK", role: .cancel) { alertMessage = nil }
+            } message: {
+                Text(alertMessage ?? "")
+            }
         }
         .task { await load() }
     }
 
-    // MARK: - Content
+    // MARK: - Canvas
+
+    private func canvas(_ editor: MaskEditor) -> some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            let frame = imageFrame(canvas: size, imageSize: editor.base.size)
+
+            ZStack {
+                CheckerboardView()
+
+                Image(uiImage: editor.preview)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: max(frame.width, 1), height: max(frame.height, 1))
+                    .position(x: frame.midX, y: frame.midY)
+
+                selectionOverlay(frame: frame)
+
+                if showZoomHint && !isRemoving {
+                    zoomHint
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .clipped()
+            .contentShape(Rectangle())
+            .gesture(dragGesture(editor: editor, frame: frame, canvas: size))
+            .simultaneousGesture(magnifyGesture(canvas: size, imageSize: editor.base.size))
+        }
+    }
+
+    private var zoomHint: some View {
+        VStack {
+            Spacer()
+            Text("Pinch to zoom in and out")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(Color.black.opacity(0.65)))
+                .padding(.bottom, 18)
+        }
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
 
     @ViewBuilder
-    private var content: some View {
-        if let editor {
-            GeometryReader { proxy in
-                canvasSquare(editor: editor, available: proxy.size)
+    private func selectionOverlay(frame: CGRect) -> some View {
+        if activeTool == .rectangle, let rect = selectionRect {
+            let canvasRect = CGRect(
+                x: frame.minX + rect.minX * frame.width,
+                y: frame.minY + rect.minY * frame.height,
+                width: rect.width * frame.width,
+                height: rect.height * frame.height
+            )
+            ZStack {
+                Rectangle().fill(Color.white.opacity(0.15))
+                Rectangle().stroke(
+                    Color.white,
+                    style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                )
             }
-            .padding(16)
-        } else if isLoading {
-            ProgressView("Preparing sticker…")
-                .controlSize(.large)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ContentUnavailableView {
-                Label("Couldn't Open This Photo", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(loadErrorMessage ?? "Try choosing a different photo.")
-            } actions: {
-                Button("Try Again") { retry() }
-                Button("Close") { dismiss() }
+            .frame(width: max(canvasRect.width, 1), height: max(canvasRect.height, 1))
+            .position(x: canvasRect.midX, y: canvasRect.midY)
+            .allowsHitTesting(false)
+        } else if activeTool == .lasso, lassoPoints.count >= 2 {
+            ZStack {
+                lassoPath(frame: frame).fill(Color.white.opacity(0.12))
+                lassoPath(frame: frame).stroke(
+                    Color.white,
+                    style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                )
             }
+            .allowsHitTesting(false)
         }
     }
 
-    private func canvasSquare(editor: MaskEditor, available: CGSize) -> some View {
-        let side = max(1, min(available.width, available.height))
-        let imageSize = editor.base.size
-        let scale = (imageSize.width > 0 && imageSize.height > 0)
-            ? min(side / imageSize.width, side / imageSize.height)
-            : 1
-        let displaySize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-        let origin = CGPoint(
-            x: (side - displaySize.width) / 2,
-            y: (side - displaySize.height) / 2
+    private func lassoPath(frame: CGRect) -> Path {
+        var path = Path()
+        let points = lassoPoints.map { canvasPoint($0, in: frame) }
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        for point in points.dropFirst() { path.addLine(to: point) }
+        path.closeSubpath()
+        return path
+    }
+
+    // MARK: - Gestures
+
+    private func dragGesture(editor: MaskEditor, frame: CGRect, canvas: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if showZoomHint { showZoomHint = false }
+                guard !magnifying else { return }
+
+                switch activeTool {
+                case .brush, .erase:
+                    draw(editor: editor, value: value, frame: frame)
+                case .rectangle:
+                    updateRectSelection(value: value, frame: frame)
+                case .lasso:
+                    updateLasso(value: value, frame: frame)
+                case .full, .aiCut:
+                    panCanvas(value: value, canvas: canvas, imageSize: editor.base.size)
+                }
+            }
+            .onEnded { value in
+                guard !magnifying else { return }
+
+                switch activeTool {
+                case .brush, .erase:
+                    if lastPoint != nil {
+                        editor.endStroke()
+                        hasCommittedChange = true
+                    }
+                    lastPoint = nil
+                case .rectangle:
+                    commitRectSelection(editor: editor)
+                case .lasso:
+                    commitLasso(editor: editor)
+                case .full, .aiCut:
+                    panning = false
+                    panStart = pan
+                }
+            }
+    }
+
+    private func magnifyGesture(canvas: CGSize, imageSize: CGSize) -> some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                if showZoomHint { showZoomHint = false }
+                if !magnifying {
+                    magnifying = true
+                    zoomStart = zoom
+                    panStart = pan
+                }
+                zoom = min(max(zoomStart * value, 1), maxZoom)
+                pan = clampedPan(pan, canvas: canvas, imageSize: imageSize)
+            }
+            .onEnded { _ in
+                magnifying = false
+                zoomStart = zoom
+                panStart = pan
+                pan = clampedPan(pan, canvas: canvas, imageSize: imageSize)
+            }
+    }
+
+    private func draw(editor: MaskEditor, value: DragGesture.Value, frame: CGRect) {
+        let point = normalized(value.location, in: frame)
+        if lastPoint == nil { editor.beginStroke() }
+        editor.stroke(
+            from: lastPoint ?? point,
+            to: point,
+            restoring: activeTool == .brush
         )
-
-        return ZStack {
-            CheckerboardView()
-
-            Image(uiImage: editor.preview)
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-                .frame(width: side, height: side)
-        }
-        .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            if activeTool == .crop {
-                cropOverlay(origin: origin, displaySize: displaySize, canvasSize: side)
-            }
-        }
-        .contentShape(Rectangle())
-        .gesture(drawGesture(editor: editor, origin: origin, displaySize: displaySize))
-        .position(x: available.width / 2, y: available.height / 2)
+        lastPoint = point
     }
 
-    // MARK: - Toolbar
-
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel") { cancel() }
+    private func panCanvas(value: DragGesture.Value, canvas: CGSize, imageSize: CGSize) {
+        if !panning {
+            panning = true
+            panStart = pan
         }
-
-        ToolbarItem(placement: .confirmationAction) {
-            Button("Done") { finish() }
-                .buttonStyle(.glassProminent)
-                .disabled(editor == nil)
-        }
+        let candidate = CGSize(
+            width: panStart.width + value.translation.width,
+            height: panStart.height + value.translation.height
+        )
+        pan = clampedPan(candidate, canvas: canvas, imageSize: imageSize)
     }
 
-    // MARK: - Bottom controls (control layer)
+    private func updateRectSelection(value: DragGesture.Value, frame: CGRect) {
+        let start = selectionStart ?? normalized(value.startLocation, in: frame)
+        selectionStart = start
+        let current = normalized(value.location, in: frame)
+        selectionRect = CGRect(
+            x: min(start.x, current.x),
+            y: min(start.y, current.y),
+            width: abs(current.x - start.x),
+            height: abs(current.y - start.y)
+        )
+    }
 
-    private var bottomControls: some View {
-        VStack(spacing: 10) {
-            if showStatus {
-                statusLine
+    private func commitRectSelection(editor: MaskEditor) {
+        defer {
+            selectionStart = nil
+            selectionRect = nil
+        }
+        guard let rect = selectionRect, rect.width > 0.01, rect.height > 0.01 else { return }
+        editor.selectRectangle(rect, removing: true)
+        hasCommittedChange = true
+    }
+
+    private func updateLasso(value: DragGesture.Value, frame: CGRect) {
+        let point = normalized(value.location, in: frame)
+        if let last = lassoPoints.last {
+            let dx = point.x - last.x
+            let dy = point.y - last.y
+            if dx * dx + dy * dy < 0.00002 { return }
+        }
+        lassoPoints.append(point)
+    }
+
+    private func commitLasso(editor: MaskEditor) {
+        defer { lassoPoints = [] }
+        guard lassoPoints.count >= 3 else { return }
+        editor.selectLasso(lassoPoints, removing: true)
+        hasCommittedChange = true
+    }
+
+    // MARK: - Geometry mapping
+
+    private func imageFrame(canvas: CGSize, imageSize: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              canvas.width > 0, canvas.height > 0 else { return .zero }
+        let fit = min(canvas.width / imageSize.width, canvas.height / imageSize.height)
+        let width = imageSize.width * fit * zoom
+        let height = imageSize.height * fit * zoom
+        let centerX = canvas.width / 2 + pan.width
+        let centerY = canvas.height / 2 + pan.height
+        return CGRect(x: centerX - width / 2, y: centerY - height / 2, width: width, height: height)
+    }
+
+    private func clampedPan(_ value: CGSize, canvas: CGSize, imageSize: CGSize) -> CGSize {
+        guard imageSize.width > 0, imageSize.height > 0,
+              canvas.width > 0, canvas.height > 0 else { return value }
+        let fit = min(canvas.width / imageSize.width, canvas.height / imageSize.height)
+        let maxX = max(0, (imageSize.width * fit * zoom - canvas.width) / 2)
+        let maxY = max(0, (imageSize.height * fit * zoom - canvas.height) / 2)
+        return CGSize(
+            width: min(max(value.width, -maxX), maxX),
+            height: min(max(value.height, -maxY), maxY)
+        )
+    }
+
+    /// Touch → normalized 0...1 image coordinates, clamped to the image edges.
+    private func normalized(_ location: CGPoint, in frame: CGRect) -> CGPoint {
+        guard frame.width > 0, frame.height > 0 else { return .zero }
+        let x = (location.x - frame.minX) / frame.width
+        let y = (location.y - frame.minY) / frame.height
+        return CGPoint(x: min(max(x, 0), 1), y: min(max(y, 0), 1))
+    }
+
+    private func canvasPoint(_ point: CGPoint, in frame: CGRect) -> CGPoint {
+        CGPoint(x: frame.minX + point.x * frame.width, y: frame.minY + point.y * frame.height)
+    }
+
+    // MARK: - Control layer
+
+    private var controlLayer: some View {
+        VStack(spacing: 12) {
+            if activeTool.isDrawing {
+                brushRow
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            if activeTool != nil {
-                contextualRow
-            }
-            toolRow
+
+            toolGrid
+
+            Divider()
+
+            actionBar
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-    }
-
-    private var showStatus: Bool {
-        guard let editor else { return false }
-        return !editor.hasSubject || (hasCrop && activeTool != .crop)
-    }
-
-    @ViewBuilder
-    private var statusLine: some View {
-        if let editor {
-            if !editor.hasSubject {
-                Text("No subject detected — use Erase to clean up the background.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            } else if hasCrop && activeTool != .crop {
-                HStack(spacing: 8) {
-                    Label("Cropped region applied", systemImage: "crop")
-                    Spacer(minLength: 0)
-                    Button("Reset") { resetCrop() }
-                        .foregroundStyle(Color.accentColor)
-                }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var contextualRow: some View {
-        if activeTool == .erase || activeTool == .restore {
-            brushRow
-        } else if activeTool == .crop {
-            cropRow
-        }
-    }
-
-    private var toolRow: some View {
-        HStack(spacing: 8) {
-            toolButton("Crop", symbol: "crop", active: activeTool == .crop) {
-                toggleTool(.crop)
-            }
-
-            if editor?.hasSubject == true {
-                toolButton(
-                    "Remove Background",
-                    symbol: backgroundRemoved ? "person.crop.rectangle" : "person.crop.rectangle.badge.plus",
-                    active: backgroundRemoved
-                ) {
-                    toggleBackground()
-                }
-            }
-
-            toolButton("Erase", symbol: "eraser", active: activeTool == .erase) {
-                toggleTool(.erase)
-            }
-
-            toolButton("Restore", symbol: "paintbrush.pointed", active: activeTool == .restore) {
-                toggleTool(.restore)
-            }
-        }
-    }
-
-    private func toolButton(
-        _ title: String,
-        symbol: String,
-        active: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.title3)
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.glass)
-        .tint(active ? Color.accentColor : nil)
-        .accessibilityLabel(title)
-        .accessibilityValue(active ? "on" : "off")
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+        .background(Color(uiColor: .systemBackground), ignoresSafeAreaEdges: .bottom)
+        .overlay(alignment: .top) { Divider() }
+        .animation(.snappy, value: activeTool)
     }
 
     private var brushRow: some View {
         HStack(spacing: 12) {
-            Slider(value: brushBinding, in: 0.02...0.3) {
-                Text("Brush size")
+            Image(systemName: "circle.fill")
+                .font(.system(size: 7))
+                .foregroundStyle(.secondary)
+
+            Slider(value: brushBinding, in: 0.02...0.3)
+                .accessibilityLabel("Brush size")
+                .accessibilityValue(Text(brushAccessibilityValue))
+
+            Image(systemName: "circle.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var toolGrid: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                toolButton(.aiCut)
+                toolButton(.rectangle)
+                toolButton(.lasso)
             }
-            .frame(minWidth: 80)
-            .disabled(editor == nil)
-            .accessibilityLabel("Brush size")
-            .accessibilityValue(Text(brushAccessibilityValue))
+            HStack(spacing: 8) {
+                toolButton(.full)
+                toolButton(.brush)
+                toolButton(.erase)
+            }
+        }
+    }
+
+    private func toolButton(_ tool: Tool) -> some View {
+        Button {
+            select(tool)
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: tool.symbol)
+                    .font(.system(size: 20))
+                    .frame(width: 36, height: 34)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(activeTool == tool ? Color(uiColor: .systemGray5) : .clear)
+                    )
+
+                Text(tool.title)
+                    .font(.caption2)
+                    .foregroundStyle(activeTool == tool ? .primary : .secondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tool.title)
+        .accessibilityAddTraits(activeTool == tool ? .isSelected : AccessibilityTraits())
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 8) {
+            Button("Cancel") { cancel() }
+                .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+
+            Spacer(minLength: 0)
 
             Button {
                 editor?.undo()
+                hasCommittedChange = true
             } label: {
                 Image(systemName: "arrow.uturn.backward")
-                    .frame(minWidth: 44, minHeight: 44)
+                    .font(.system(size: 18, weight: .medium))
+                    .frame(width: 44, height: 44)
             }
-            .buttonStyle(.glass)
             .disabled(!(editor?.canUndo ?? false))
             .accessibilityLabel("Undo")
 
             Button {
-                editor?.reset()
+                editor?.redo()
+                hasCommittedChange = true
             } label: {
-                Image(systemName: "arrow.counterclockwise")
-                    .frame(minWidth: 44, minHeight: 44)
+                Image(systemName: "arrow.uturn.forward")
+                    .font(.system(size: 18, weight: .medium))
+                    .frame(width: 44, height: 44)
             }
-            .buttonStyle(.glass)
-            .disabled(editor == nil)
-            .accessibilityLabel("Reset mask")
-        }
-    }
-
-    private var cropRow: some View {
-        HStack(spacing: 12) {
-            Text("Drag inside to move · corners to resize")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            .disabled(!(editor?.canRedo ?? false))
+            .accessibilityLabel("Redo")
 
             Spacer(minLength: 0)
 
-            Button("Reset") { resetCrop() }
-                .buttonStyle(.glass)
-                .disabled(!hasCrop)
-                .accessibilityLabel("Reset crop")
-
-            Button("Apply crop") { activeTool = nil }
-                .buttonStyle(.glass)
-                .accessibilityLabel("Apply crop")
+            Button("Apply") { apply() }
+                .fontWeight(.semibold)
+                .disabled(!hasCommittedChange || isRemoving)
+                .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
         }
+        .font(.body)
     }
 
     // MARK: - Tool state
-
-    private var hasCrop: Bool {
-        !(cropRect.minX <= 0.001
-            && cropRect.minY <= 0.001
-            && cropRect.width >= 0.999
-            && cropRect.height >= 0.999)
-    }
-
-    private func toggleTool(_ tool: Tool) {
-        activeTool = activeTool == tool ? nil : tool
-    }
-
-    private func toggleBackground() {
-        guard let editor else { return }
-        backgroundRemoved.toggle()
-        editor.setBackgroundRemoved(backgroundRemoved)
-    }
-
-    private func resetCrop() {
-        cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
-        cropDragging = false
-        cropActiveHandle = nil
-    }
 
     private var brushBinding: Binding<CGFloat> {
         Binding(
@@ -305,6 +472,105 @@ struct StickerEditorView: View {
         return "\(percent) percent"
     }
 
+    private func select(_ tool: Tool) {
+        switch tool {
+        case .aiCut:
+            runAICut()
+
+        case .full:
+            activeTool = .full
+            if backgroundRemoved, let editor {
+                editor.setBackgroundRemoved(false)
+                backgroundRemoved = false
+                hasCommittedChange = true
+            }
+
+        case .brush, .erase, .rectangle, .lasso:
+            activeTool = tool
+            lastPoint = nil
+            selectionStart = nil
+            selectionRect = nil
+            lassoPoints = []
+        }
+    }
+
+    // MARK: - AI Cut
+
+    private func runAICut() {
+        guard let editor, !isRemoving else { return }
+        activeTool = .aiCut
+
+        // Already lifted once: restore the stored subject mask instead of
+        // paying for another Vision pass.
+        if editor.hasSubject {
+            if !backgroundRemoved {
+                editor.setBackgroundRemoved(true)
+                backgroundRemoved = true
+                hasCommittedChange = true
+            }
+            return
+        }
+
+        isRemoving = true
+        removalProgress = 0
+
+        let base = editor.base
+        let radius = editor.brushRadius
+
+        Task {
+            do {
+                let extraction = try await BackgroundRemover.extractSubject(from: base) { value in
+                    Task { @MainActor in
+                        removalProgress = min(max(value, 0), 1)
+                    }
+                }
+                let updated = MaskEditor(base: base, mask: extraction.mask, maxDimension: 1024)
+                updated.brushRadius = radius
+                self.editor = updated
+                self.backgroundRemoved = true
+                self.hasCommittedChange = true
+                self.isRemoving = false
+            } catch {
+                self.isRemoving = false
+                self.activeTool = .full
+                self.alertMessage = (error as? LocalizedError)?.errorDescription
+                    ?? "Couldn't remove the background."
+            }
+        }
+    }
+
+    private var removalOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.12)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+
+            VStack(spacing: 14) {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+
+                Text(removalText)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 26)
+            .padding(.vertical, 22)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.black.opacity(0.72))
+            )
+        }
+        .transition(.opacity)
+    }
+
+    private var removalText: String {
+        if removalProgress > 0 {
+            return "Removing background… \(Int((removalProgress * 100).rounded()))%"
+        }
+        return "Removing background…"
+    }
+
     // MARK: - Loading
 
     @MainActor
@@ -315,20 +581,17 @@ struct StickerEditorView: View {
         defer { isLoading = false }
 
         guard let loaded = StickerSourceStore.image(for: source) else {
-            loadErrorMessage = "Couldn't read this sticker's image."
+            loadErrorMessage = "Couldn't read this photo."
             return
         }
         let base = loaded.upNormalized() ?? loaded
 
-        // Background removal is best-effort: if it fails we keep every pixel
-        // so the user can still erase manually.
-        var mask: CGImage?
-        if let extraction = try? await BackgroundRemover.extractSubject(from: base) {
-            mask = extraction.mask
-        }
-        let editor = MaskEditor(base: base, mask: mask, maxDimension: 1024)
+        // No automatic cut-out: start on Full with everything kept. Vision only
+        // runs when the user taps AI Cut.
+        let editor = MaskEditor(base: base, mask: nil, maxDimension: 1024)
         self.editor = editor
-        backgroundRemoved = editor.hasSubject
+        activeTool = .full
+        backgroundRemoved = false
     }
 
     private func retry() {
@@ -338,216 +601,80 @@ struct StickerEditorView: View {
         Task { await load() }
     }
 
-    // MARK: - Drawing
-
-    private func drawGesture(editor: MaskEditor, origin: CGPoint, displaySize: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                guard activeTool == .erase || activeTool == .restore else { return }
-                guard let point = normalizedPoint(
-                    value.location,
-                    origin: origin,
-                    displaySize: displaySize
-                ) else { return }
-
-                if lastPoint == nil {
-                    editor.beginStroke()
-                }
-                editor.stroke(
-                    from: lastPoint ?? point,
-                    to: point,
-                    restoring: activeTool == .restore
-                )
-                lastPoint = point
-            }
-            .onEnded { _ in
-                if lastPoint != nil {
-                    editor.endStroke()
-                }
-                lastPoint = nil
-            }
-    }
-
-    /// Maps a touch in the square canvas to normalized 0...1 image coordinates.
-    /// Returns `nil` when the touch lands on the letterbox area.
-    private func normalizedPoint(
-        _ location: CGPoint,
-        origin: CGPoint,
-        displaySize: CGSize
-    ) -> CGPoint? {
-        guard displaySize.width > 0, displaySize.height > 0 else { return nil }
-        let x = (location.x - origin.x) / displaySize.width
-        let y = (location.y - origin.y) / displaySize.height
-        guard x >= -0.02, x <= 1.02, y >= -0.02, y <= 1.02 else { return nil }
-        return CGPoint(x: min(max(x, 0), 1), y: min(max(y, 0), 1))
-    }
-
-    // MARK: - Crop
-
-    private func cropOverlay(origin: CGPoint, displaySize: CGSize, canvasSize: CGFloat) -> some View {
-        let crop = CGRect(
-            x: origin.x + cropRect.minX * displaySize.width,
-            y: origin.y + cropRect.minY * displaySize.height,
-            width: cropRect.width * displaySize.width,
-            height: cropRect.height * displaySize.height
-        )
-        let corners = [
-            CGPoint(x: crop.minX, y: crop.minY),
-            CGPoint(x: crop.maxX, y: crop.minY),
-            CGPoint(x: crop.minX, y: crop.maxY),
-            CGPoint(x: crop.maxX, y: crop.maxY)
-        ]
-
-        return ZStack {
-            // Shaded region outside the crop rect.
-            Path { path in
-                path.addRect(CGRect(x: 0, y: 0, width: canvasSize, height: canvasSize))
-                path.addRect(crop)
-            }
-            .fill(Color.black.opacity(0.5), style: FillStyle(eoFill: true))
-            .allowsHitTesting(false)
-
-            Rectangle()
-                .stroke(Color.white, lineWidth: 2)
-                .frame(width: crop.width, height: crop.height)
-                .position(x: crop.midX, y: crop.midY)
-                .allowsHitTesting(false)
-
-            ForEach(corners, id: \.self) { corner in
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 30, height: 30)
-                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 3))
-                    .shadow(radius: 2)
-                    .position(corner)
-                    .allowsHitTesting(false)
-            }
-        }
-        .frame(width: canvasSize, height: canvasSize)
-        .contentShape(Rectangle())
-        .gesture(cropGesture(crop: crop, displaySize: displaySize))
-    }
-
-    private func cropGesture(crop: CGRect, displaySize: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                if !cropDragging {
-                    cropDragging = true
-                    cropInitialRect = cropRect
-                    cropActiveHandle = cropHandle(at: value.startLocation, in: crop)
-                }
-                guard let handle = cropActiveHandle else { return }
-                cropRect = updatedCropRect(
-                    handle: handle,
-                    initial: cropInitialRect,
-                    translation: value.translation,
-                    displaySize: displaySize
-                )
-            }
-            .onEnded { _ in
-                cropDragging = false
-                cropActiveHandle = nil
-            }
-    }
-
-    private func cropHandle(at point: CGPoint, in rect: CGRect) -> CropHandle? {
-        let threshold: CGFloat = 44
-        let candidates: [(CropHandle, CGPoint)] = [
-            (.topLeft, CGPoint(x: rect.minX, y: rect.minY)),
-            (.topRight, CGPoint(x: rect.maxX, y: rect.minY)),
-            (.bottomLeft, CGPoint(x: rect.minX, y: rect.maxY)),
-            (.bottomRight, CGPoint(x: rect.maxX, y: rect.maxY))
-        ]
-        for (handle, corner) in candidates {
-            let dx = point.x - corner.x
-            let dy = point.y - corner.y
-            if (dx * dx + dy * dy).squareRoot() <= threshold {
-                return handle
-            }
-        }
-        return rect.contains(point) ? .move : nil
-    }
-
-    private func updatedCropRect(
-        handle: CropHandle,
-        initial: CGRect,
-        translation: CGSize,
-        displaySize: CGSize
-    ) -> CGRect {
-        guard displaySize.width > 0, displaySize.height > 0 else { return initial }
-        let dx = translation.width / displaySize.width
-        let dy = translation.height / displaySize.height
-        let minSize: CGFloat = 0.1
-
-        switch handle {
-        case .move:
-            let x = min(max(0, initial.minX + dx), 1 - initial.width)
-            let y = min(max(0, initial.minY + dy), 1 - initial.height)
-            return CGRect(x: x, y: y, width: initial.width, height: initial.height)
-
-        case .topLeft:
-            let x = min(max(0, initial.minX + dx), initial.maxX - minSize)
-            let y = min(max(0, initial.minY + dy), initial.maxY - minSize)
-            return CGRect(x: x, y: y, width: initial.maxX - x, height: initial.maxY - y)
-
-        case .topRight:
-            let maxX = max(min(1, initial.maxX + dx), initial.minX + minSize)
-            let y = min(max(0, initial.minY + dy), initial.maxY - minSize)
-            return CGRect(x: initial.minX, y: y, width: maxX - initial.minX, height: initial.maxY - y)
-
-        case .bottomLeft:
-            let x = min(max(0, initial.minX + dx), initial.maxX - minSize)
-            let maxY = max(min(1, initial.maxY + dy), initial.minY + minSize)
-            return CGRect(x: x, y: initial.minY, width: initial.maxX - x, height: maxY - initial.minY)
-
-        case .bottomRight:
-            let maxX = max(min(1, initial.maxX + dx), initial.minX + minSize)
-            let maxY = max(min(1, initial.maxY + dy), initial.minY + minSize)
-            return CGRect(x: initial.minX, y: initial.minY, width: maxX - initial.minX, height: maxY - initial.minY)
-        }
-    }
-
     // MARK: - Finish
 
     private func cancel() {
-        // Exiting crop mode first is the natural escape hatch; otherwise discard.
-        if activeTool == .crop {
-            activeTool = nil
-        } else {
-            dismiss()
-        }
-    }
-
-    private func finish() {
-        guard let editor else {
-            dismiss()
-            return
-        }
-        let crop = hasCrop ? cropRect : nil
-        if let image = editor.render(croppedTo: crop) {
-            onDone(image)
-        }
         dismiss()
     }
 
-    private enum CropHandle {
-        case move
-        case topLeft
-        case topRight
-        case bottomLeft
-        case bottomRight
+    private func apply() {
+        guard let editor else { return }
+        guard let image = editor.render(croppedTo: nil) else {
+            alertMessage = "Couldn't render the edited image."
+            return
+        }
+        do {
+            let sticker = try StickerFactory.encodeStatic(image, source: source)
+            onDone(sticker)
+            dismiss()
+        } catch {
+            alertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private var alertBinding: Binding<Bool> {
+        Binding(
+            get: { alertMessage != nil },
+            set: { if !$0 { alertMessage = nil } }
+        )
+    }
+
+    // MARK: - Tools
+
+    private enum Tool: String, Identifiable, CaseIterable {
+        case aiCut
+        case rectangle
+        case lasso
+        case full
+        case brush
+        case erase
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .aiCut: "AI Cut"
+            case .rectangle: "Rectangle"
+            case .lasso: "Lasso"
+            case .full: "Full"
+            case .brush: "Brush"
+            case .erase: "Erase"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .aiCut: "person.crop.rectangle"
+            case .rectangle: "rectangle.dashed"
+            case .lasso: "lasso"
+            case .full: "square.grid.3x3"
+            case .brush: "paintbrush.pointed"
+            case .erase: "eraser"
+            }
+        }
+
+        var isDrawing: Bool { self == .brush || self == .erase }
     }
 }
 
-/// Opaque checkerboard that makes transparency in the sticker canvas readable.
-/// Content layer — never glass.
+/// Grey checkerboard that reads transparency in the canvas. Content layer.
 private struct CheckerboardView: View {
     private let cell: CGFloat = 14
 
     var body: some View {
         Canvas { context, size in
-            let light = Color(uiColor: .systemBackground)
-            let dark = Color(uiColor: .systemGray5)
+            let light = Color(uiColor: .systemGray5)
+            let dark = Color(uiColor: .systemGray3)
             let columns = max(1, Int(ceil(size.width / cell)))
             let rows = max(1, Int(ceil(size.height / cell)))
 

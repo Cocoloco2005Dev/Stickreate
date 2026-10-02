@@ -33,16 +33,21 @@ enum BackgroundRemover {
     /// Uses `VNGenerateForegroundInstanceMaskRequest` (iOS 17+).
     ///
     /// The Vision pass runs off the main thread so callers awaiting this method
-    /// (typically the UI) stay responsive.
-    static func removeBackground(from image: UIImage) async throws -> UIImage {
-        let extraction = try await extractSubject(from: image)
+    /// (typically the UI) stay responsive. `progress` is reported on the main
+    /// queue with values in `0...1`.
+    static func removeBackground(from image: UIImage, progress: ((Double) -> Void)? = nil) async throws -> UIImage {
+        let extraction = try await extractSubject(from: image, progress: progress)
         return extraction.cutout
     }
 
     /// Returns both the cut-out and the raw subject mask so the user can edit it.
     ///
-    /// The Vision pass runs off the main thread.
-    static func extractSubject(from image: UIImage) async throws -> SubjectExtraction {
+    /// The Vision pass runs off the main thread. `progress` is reported on the
+    /// main queue with values in `0...1`.
+    static func extractSubject(
+        from image: UIImage,
+        progress: ((Double) -> Void)? = nil
+    ) async throws -> SubjectExtraction {
         let upright = image.upNormalized() ?? image
         guard let ciImage = CIImage(image: upright) else {
             throw Failure.failed("Couldn't read this image.")
@@ -51,10 +56,12 @@ enum BackgroundRemover {
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SubjectExtraction, Error>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 let request = VNGenerateForegroundInstanceMaskRequest()
+                let reportsProgress = attachProgressHandler(to: request, progress: progress)
                 let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
                 do {
                     try handler.perform([request])
                     guard let result = request.results?.first else {
+                        if !reportsProgress { reportProgress(progress, 1) }
                         continuation.resume(throwing: Failure.noSubject)
                         return
                     }
@@ -79,6 +86,7 @@ enum BackgroundRemover {
                         return
                     }
 
+                    if !reportsProgress { reportProgress(progress, 1) }
                     continuation.resume(returning: SubjectExtraction(
                         cutout: UIImage(cgImage: cutoutCG),
                         mask: mask
@@ -87,6 +95,33 @@ enum BackgroundRemover {
                     continuation.resume(throwing: Failure.failed(error.localizedDescription))
                 }
             }
+        }
+    }
+
+    /// Wires Vision's progress handler into `progress` when the request supports
+    /// it, and reports the initial `0`. Returns whether the handler was attached.
+    @discardableResult
+    private static func attachProgressHandler(
+        to request: VNRequest,
+        progress: ((Double) -> Void)?
+    ) -> Bool {
+        guard let progress else { return false }
+        reportProgress(progress, 0)
+        guard let provider = request as? VNRequestProgressProviding else { return false }
+        provider.progressHandler = { _, fraction, _ in
+            reportProgress(progress, fraction)
+        }
+        return true
+    }
+
+    /// Delivers progress on the main queue, clamped to `0...1`.
+    private static func reportProgress(_ progress: ((Double) -> Void)?, _ value: Double) {
+        guard let progress else { return }
+        let clamped = min(max(value, 0), 1)
+        if Thread.isMainThread {
+            progress(clamped)
+        } else {
+            DispatchQueue.main.async { progress(clamped) }
         }
     }
 

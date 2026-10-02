@@ -108,15 +108,29 @@ enum StickerFactory {
     ///
     /// Background removal is opt-in (off by default): per-frame Vision is slow
     /// and memory-hungry, and video stickers rarely need it.
+    ///
+    /// `onProgress` (0...1, main queue): frame extraction when
+    /// `removeBackground == false`, otherwise per-frame Vision across the clip.
     static func makeAnimatedSticker(
         from draft: VideoDraft,
         range: ClosedRange<TimeInterval>,
         fps: Double,
         removeBackground: Bool = false,
-        source: StickerSource? = nil
+        source: StickerSource? = nil,
+        onProgress: ((Double) -> Void)? = nil
     ) async throws -> StickerItem {
-        let frames = try await FrameExtractor.frames(fromVideoAt: draft.url, range: range, fps: fps)
-        return try await makeAnimated(from: frames, removeBackground: removeBackground, source: source)
+        let frames = try await FrameExtractor.frames(
+            fromVideoAt: draft.url,
+            range: range,
+            fps: fps,
+            onProgress: removeBackground ? nil : onProgress
+        )
+        return try await makeAnimated(
+            from: frames,
+            removeBackground: removeBackground,
+            source: source,
+            onProgress: removeBackground ? onProgress : nil
+        )
     }
 
     /// Rebuilds an animated sticker from a stored GIF source.
@@ -132,7 +146,8 @@ enum StickerFactory {
     private static func makeAnimated(
         from frames: [Frame],
         removeBackground: Bool,
-        source: StickerSource?
+        source: StickerSource?,
+        onProgress: ((Double) -> Void)? = nil
     ) async throws -> StickerItem {
         guard !frames.isEmpty else { throw Failure.empty }
 
@@ -140,7 +155,7 @@ enum StickerFactory {
         // cut, keep the original frames for all.
         let usable: [Frame]
         if removeBackground {
-            usable = await cutOut(frames) ?? frames
+            usable = await cutOut(frames, onProgress: onProgress) ?? frames
         } else {
             usable = frames
         }
@@ -161,17 +176,35 @@ enum StickerFactory {
 
     /// Background-removes every frame. Returns nil when the first frame fails,
     /// signalling the caller to use the original frames.
-    private static func cutOut(_ frames: [Frame]) async -> [Frame]? {
+    ///
+    /// `onProgress` maps each frame's Vision progress into the overall `0...1`.
+    private static func cutOut(_ frames: [Frame], onProgress: ((Double) -> Void)? = nil) async -> [Frame]? {
         guard let first = frames.first else { return nil }
-        guard let firstCut = try? await BackgroundRemover.removeBackground(from: first.image) else {
+        let total = Double(frames.count)
+
+        func mapped(_ index: Int, _ fraction: Double) -> Double {
+            (Double(index) + min(max(fraction, 0), 1)) / total
+        }
+
+        guard let firstCut = try? await BackgroundRemover.removeBackground(
+            from: first.image,
+            progress: { onProgress?(mapped(0, $0)) }
+        ) else {
+            onProgress?(1)
             return nil
         }
 
         var result = [Frame(image: firstCut, duration: first.duration)]
-        for frame in frames.dropFirst() {
-            let image = (try? await BackgroundRemover.removeBackground(from: frame.image)) ?? frame.image
+        for (offset, frame) in frames.dropFirst().enumerated() {
+            let index = offset + 1
+            let image = (try? await BackgroundRemover.removeBackground(
+                from: frame.image,
+                progress: { onProgress?(mapped(index, $0)) }
+            )) ?? frame.image
             result.append(Frame(image: image, duration: frame.duration))
         }
+
+        onProgress?(1)
         return result
     }
 

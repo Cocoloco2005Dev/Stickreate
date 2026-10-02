@@ -24,6 +24,7 @@ final class MaskEditor {
     var brushRadius: CGFloat = 0.08
 
     var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
 
     private let pixelWidth: Int
     private let pixelHeight: Int
@@ -35,6 +36,7 @@ final class MaskEditor {
     /// Whether the subject cut-out is currently in use.
     private var backgroundRemoved: Bool
     private var undoStack: [[UInt8]] = []
+    private var redoStack: [[UInt8]] = []
 
     /// Guards against out-of-order preview publishes during fast strokes.
     private var previewGeneration = 0
@@ -109,7 +111,57 @@ final class MaskEditor {
 
     func undo() {
         guard let previous = undoStack.popLast() else { return }
+        redoStack.append(maskData)
         maskData = previous
+        refreshPreview()
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(maskData)
+        maskData = next
+        refreshPreview()
+    }
+
+    /// Fills a normalized top-left rect. `removing == true` paints black
+    /// (remove); `false` paints white (keep).
+    func selectRectangle(_ rect: CGRect, removing: Bool) {
+        pushUndo()
+        rasterize { context in
+            context.setFillColor(gray: removing ? 0 : 1, alpha: 1)
+            context.fill(CGRect(
+                x: rect.minX * CGFloat(pixelWidth),
+                y: (1 - rect.maxY) * CGFloat(pixelHeight),
+                width: rect.width * CGFloat(pixelWidth),
+                height: rect.height * CGFloat(pixelHeight)
+            ))
+        }
+        refreshPreview()
+    }
+
+    /// Fills a normalized top-left polygon (at least three points). Same
+    /// keep/remove semantics as `selectRectangle`.
+    func selectLasso(_ points: [CGPoint], removing: Bool) {
+        guard points.count >= 3 else { return }
+        pushUndo()
+        rasterize { context in
+            context.setFillColor(gray: removing ? 0 : 1, alpha: 1)
+            let path = CGMutablePath()
+            for (index, point) in points.enumerated() {
+                let mapped = CGPoint(
+                    x: point.x * CGFloat(pixelWidth),
+                    y: (1 - point.y) * CGFloat(pixelHeight)
+                )
+                if index == 0 {
+                    path.move(to: mapped)
+                } else {
+                    path.addLine(to: mapped)
+                }
+            }
+            path.closeSubpath()
+            context.addPath(path)
+            context.fillPath()
+        }
         refreshPreview()
     }
 
@@ -125,6 +177,7 @@ final class MaskEditor {
             backgroundRemoved = false
             maskData = whiteMask
         }
+        redoStack.removeAll()
         refreshPreview()
     }
 
@@ -132,6 +185,7 @@ final class MaskEditor {
     func reset() {
         maskData = backgroundRemoved ? (subjectMask ?? whiteMask) : whiteMask
         undoStack.removeAll()
+        redoStack.removeAll()
         refreshPreview()
     }
 
@@ -189,6 +243,28 @@ final class MaskEditor {
         while undoStack.count > maxUndoCount
             || undoStack.reduce(0, { $0 + $1.count }) > maxUndoBytes {
             undoStack.removeFirst()
+        }
+        redoStack.removeAll()
+    }
+
+    /// Draws into the mask buffer through a flipped gray `CGContext` so
+    /// normalized top-left coordinates line up with `maskData` (same Y-flip
+    /// convention as `seed`).
+    private func rasterize(_ draw: (CGContext) -> Void) {
+        maskData.withUnsafeMutableBytes { buffer in
+            guard let baseAddress = buffer.baseAddress,
+                  let context = CGContext(
+                      data: baseAddress,
+                      width: pixelWidth,
+                      height: pixelHeight,
+                      bitsPerComponent: 8,
+                      bytesPerRow: pixelWidth,
+                      space: CGColorSpaceCreateDeviceGray(),
+                      bitmapInfo: CGImageAlphaInfo.none.rawValue
+                  ) else { return }
+            context.translateBy(x: 0, y: CGFloat(pixelHeight))
+            context.scaleBy(x: 1, y: -1)
+            draw(context)
         }
     }
 

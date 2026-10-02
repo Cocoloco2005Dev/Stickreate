@@ -66,11 +66,14 @@ enum FrameExtractor {
     /// Extracts frames from a trimmed `range` at `fps` frames per second,
     /// never exceeding `maxFrames`. `fps` is clamped to 1...30 and each frame
     /// lasts `1/fps` (at least `Limits.minFrameDuration`).
+    ///
+    /// `onProgress` is reported on the main queue as each frame is decoded.
     static func frames(
         fromVideoAt url: URL,
         range: ClosedRange<TimeInterval>,
         fps: Double,
-        maxFrames: Int = 150
+        maxFrames: Int = 150,
+        onProgress: ((Double) -> Void)? = nil
     ) async throws -> [Frame] {
         let clampedFPS = min(max(fps, 1), 30)
         let lower = max(0, range.lowerBound)
@@ -87,7 +90,12 @@ enum FrameExtractor {
             CMTime(seconds: lower + step * Double($0), preferredTimescale: 600)
         }
         let task = Task.detached(priority: .userInitiated) {
-            try decodeFrames(url: url, times: times, frameDuration: frameDuration)
+            try decodeFrames(
+                url: url,
+                times: times,
+                frameDuration: frameDuration,
+                onProgress: onProgress
+            )
         }
         return try await task.value
     }
@@ -97,7 +105,8 @@ enum FrameExtractor {
     private static func decodeFrames(
         url: URL,
         times: [CMTime],
-        frameDuration: TimeInterval
+        frameDuration: TimeInterval,
+        onProgress: ((Double) -> Void)?
     ) throws -> [Frame] {
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         generator.appliesPreferredTrackTransform = true
@@ -105,14 +114,24 @@ enum FrameExtractor {
         generator.requestedTimeToleranceBefore = frameTolerance
         generator.requestedTimeToleranceAfter = frameTolerance
 
+        let total = Double(times.count)
         var frames: [Frame] = []
-        for time in times {
+        for (index, time) in times.enumerated() {
             let frame: Frame? = autoreleasepool {
                 guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
                 let image = UIImage(cgImage: cgImage).scaled(toMaxDimension: frameMaxDimension)
                 return Frame(image: image, duration: frameDuration)
             }
             if let frame { frames.append(frame) }
+
+            if let onProgress, total > 0 {
+                let value = Double(index + 1) / total
+                if Thread.isMainThread {
+                    onProgress(value)
+                } else {
+                    DispatchQueue.main.async { onProgress(value) }
+                }
+            }
         }
 
         guard !frames.isEmpty else { throw Failure.empty }
