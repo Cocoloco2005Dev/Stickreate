@@ -1,0 +1,96 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          set -euo pipefail
+          CHOSEN=$(python3 - <<'PY'
+          import glob, os, re
+          apps = glob.glob('/Applications/Xcode*.app')
+          def ver(p):
+              m = re.search(r'Xcode[_.]?(\d+)(?:[_.](\d+))?', os.path.basename(p))
+              return (int(m.group(1)), int(m.group(2) or 0)) if m else (0, 0)
+          apps.sort(key=ver)
+          print(apps[-1] if apps else '')
+          PY
+          )
+          [ -n "$CHOSEN" ] || { echo "No Xcode found"; exit 1; }
+          echo "Selecting $CHOSEN"
+          sudo xcode-select -s "$CHOSEN/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project Stickreate.xcodeproj \
+            -scheme Stickreate \
+            -configuration Release
+
+      - name: Archive (unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project Stickreate.xcodeproj \
+            -scheme Stickreate \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/Stickreate.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/Stickreate.xcarchive/Products/Applications/Stickreate.app"
+          test -d "$APP" || { echo "App not found at $APP"; exit 1; }
+          rm -rf "$RUNNER_TEMP/ipa"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry Stickreate-unsigned.ipa Payload)
+          echo "IPA=$RUNNER_TEMP/ipa/Stickreate-unsigned.ipa" >> "$GITHUB_ENV"
+          ls -la "$RUNNER_TEMP/ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stickreate-unsigned-ipa
+          path: ${{ runner.temp }}/ipa/Stickreate-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Attach IPA to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ runner.temp }}/ipa/Stickreate-unsigned.ipa
