@@ -1,17 +1,17 @@
 import SwiftUI
 import UIKit
-import PhotosUI
+import AVKit
+import AVFoundation
 
-/// Trims a picked video and turns it into an animated sticker.
+/// Trims a video source and turns it into an animated sticker.
 ///
-/// The draft's duration loads first and the trim controls appear immediately;
-/// the timeline thumbnails are decoration and stream in afterwards without ever
-/// gating the UI. The final encode runs through
-/// `StickerFactory.makeAnimatedSticker`, which drops frames automatically if the
-/// file would exceed WhatsApp's 500 KB budget.
+/// A real AVKit preview shows the clip; dragging a trim handle pauses and seeks
+/// the player frame-accurately while a crisp still at the playhead is fetched
+/// with `FrameExtractor`. The final encode keeps the source so the sticker stays
+/// re-editable.
 @MainActor
 struct VideoTrimView: View {
-    let item: PhotosPickerItem
+    let source: StickerSource
     let onDone: (StickerItem) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -25,12 +25,17 @@ struct VideoTrimView: View {
     @State private var upperBound: TimeInterval = 0
     @State private var fps: Int = 10
 
-    @State private var thumbnails: [UIImage] = []
+    @State private var player: AVPlayer?
+    @State private var isPlaying = false
+    @State private var playheadImage: UIImage?
+    @State private var scrubTask: Task<Void, Never>?
 
     @State private var isCreating = false
     @State private var errorMessage: String?
 
-    private static let fpsOptions = [5, 10, 15, 20]
+    private static let fpsOptions = [5, 10, 15, 20, 24, 30]
+
+    private var sourceURL: URL { StickerSourceStore.url(for: source) }
 
     private var clipLength: TimeInterval {
         max(0, upperBound - lowerBound)
@@ -58,6 +63,7 @@ struct VideoTrimView: View {
                 }
         }
         .task { await load() }
+        .onDisappear { player?.pause() }
         .alert(
             "Couldn't create sticker",
             isPresented: Binding(
@@ -102,14 +108,15 @@ struct VideoTrimView: View {
     private func controls(for draft: VideoDraft) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                thumbnailStrip
+                previewCard
 
                 TrimRangeSlider(
                     duration: draft.duration,
                     minSpan: min(0.2, draft.duration),
                     maxSpan: min(Limits.maxAnimationDuration, draft.duration),
                     lower: $lowerBound,
-                    upper: $upperBound
+                    upper: $upperBound,
+                    onScrub: { time in scrub(to: time) }
                 )
 
                 rangeSummary(for: draft)
@@ -119,21 +126,36 @@ struct VideoTrimView: View {
         }
     }
 
-    @ViewBuilder
-    private var thumbnailStrip: some View {
-        if !thumbnails.isEmpty {
-            HStack(spacing: 2) {
-                ForEach(Array(thumbnails.enumerated()), id: \.offset) { _, image in
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 56)
-                        .clipped()
-                }
+    private var previewCard: some View {
+        ZStack {
+            Color.black
+
+            if isPlaying {
+                VideoPlayer(player: player)
+            } else if let playheadImage {
+                Image(uiImage: playheadImage)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                ProgressView()
+                    .tint(.white)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .accessibilityHidden(true)
+        }
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            Button {
+                togglePlayback()
+            } label: {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(.black.opacity(0.5), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(8)
+            .accessibilityLabel(isPlaying ? "Pause preview" : "Play preview")
         }
     }
 
@@ -177,7 +199,7 @@ struct VideoTrimView: View {
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
 
-            Text("More frames per second looks smoother — like a good GIF — but WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so larger clips may be reduced automatically.")
+            Text("More frames per second looks smoother — like a good GIF — but WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so it compresses and may reduce frames automatically.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -192,7 +214,7 @@ struct VideoTrimView: View {
         isLoading = true
 
         do {
-            let loaded = try await StickerFactory.loadVideoDraft(from: item)
+            let loaded = try await StickerFactory.loadVideoDraft(from: source)
             guard loaded.duration > 0 else {
                 isLoading = false
                 loadErrorMessage = "This video has no duration."
@@ -201,9 +223,13 @@ struct VideoTrimView: View {
             draft = loaded
             lowerBound = 0
             upperBound = min(loaded.duration, Limits.maxAnimationDuration)
-            // Show the trim controls right away; thumbnails are decoration.
+
+            let player = AVPlayer(url: sourceURL)
+            player.actionAtItemEnd = .pause
+            self.player = player
+
             isLoading = false
-            startThumbnailLoad(for: loaded)
+            scrub(to: lowerBound)
         } catch {
             isLoading = false
             loadErrorMessage = error.localizedDescription
@@ -217,22 +243,46 @@ struct VideoTrimView: View {
         Task { await load() }
     }
 
-    /// Streams timeline thumbnails in the background, appending as they arrive.
-    /// Never gates the UI; a failure just leaves fewer thumbnails.
-    private func startThumbnailLoad(for draft: VideoDraft) {
-        let url = draft.url
-        let duration = draft.duration
-        Task.detached(priority: .utility) {
-            let count = 8
-            for index in 0..<count {
-                let position = duration * (Double(index) + 0.5) / Double(count)
-                guard let image = try? await FrameExtractor.thumbnail(fromVideoAt: url, at: position) else {
-                    continue
-                }
-                await MainActor.run {
-                    thumbnails.append(image)
-                }
-            }
+    // MARK: - Preview / playhead
+
+    private func scrub(to time: TimeInterval) {
+        guard let player else { return }
+        if isPlaying {
+            player.pause()
+            isPlaying = false
+        }
+        player.seek(
+            to: CMTime(seconds: time, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+        loadPlayheadImage(at: time)
+    }
+
+    private func loadPlayheadImage(at time: TimeInterval) {
+        scrubTask?.cancel()
+        let url = sourceURL
+        scrubTask = Task {
+            let image = try? await FrameExtractor.thumbnail(fromVideoAt: url, at: time)
+            guard !Task.isCancelled else { return }
+            playheadImage = image
+        }
+    }
+
+    private func togglePlayback() {
+        guard let player else { return }
+        if isPlaying {
+            player.pause()
+            isPlaying = false
+            loadPlayheadImage(at: CMTimeGetSeconds(player.currentTime()))
+        } else {
+            player.seek(
+                to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+            player.play()
+            isPlaying = true
         }
     }
 
@@ -243,13 +293,16 @@ struct VideoTrimView: View {
         guard let draft, clipLength > 0 else { return }
         let range = lowerBound...upperBound
         isCreating = true
+        player?.pause()
+        isPlaying = false
 
         Task {
             do {
                 let sticker = try await StickerFactory.makeAnimatedSticker(
                     from: draft,
                     range: range,
-                    fps: Double(fps)
+                    fps: Double(fps),
+                    source: source
                 )
                 isCreating = false
                 onDone(sticker)
@@ -273,6 +326,7 @@ private struct TrimRangeSlider: View {
     let maxSpan: TimeInterval
     @Binding var lower: TimeInterval
     @Binding var upper: TimeInterval
+    let onScrub: (TimeInterval) -> Void
 
     @State private var activeHandle: Handle?
 
@@ -315,6 +369,10 @@ private struct TrimRangeSlider: View {
                         case .upper: upper = clampedUpper(proposed)
                         case nil: break
                         }
+
+                        if let handle = activeHandle {
+                            onScrub(handle == .lower ? lower : upper)
+                        }
                     }
                     .onEnded { _ in activeHandle = nil }
             )
@@ -326,8 +384,12 @@ private struct TrimRangeSlider: View {
         .accessibilityHint("Drag the handles to choose the clip")
         .accessibilityAdjustableAction { direction in
             switch direction {
-            case .increment: upper = clampedUpper(upper + 0.5)
-            case .decrement: upper = clampedUpper(upper - 0.5)
+            case .increment:
+                upper = clampedUpper(upper + 0.5)
+                onScrub(upper)
+            case .decrement:
+                upper = clampedUpper(upper - 0.5)
+                onScrub(upper)
             @unknown default: break
             }
         }

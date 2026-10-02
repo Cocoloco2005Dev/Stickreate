@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import PhotosUI
 
 /// Focused editor for a single still image, laid out like the iOS markup editor:
 /// a square canvas on a checkerboard, a bottom tool row (Crop, Remove Background,
@@ -8,7 +7,7 @@ import PhotosUI
 /// left of the nav bar, Done (the single prominent action) on the right.
 @MainActor
 struct StickerEditorView: View {
-    let item: PhotosPickerItem
+    let source: StickerSource
     let onDone: (UIImage) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -315,20 +314,21 @@ struct StickerEditorView: View {
         isLoading = true
         defer { isLoading = false }
 
-        do {
-            let base = try await StickerFactory.loadUprightImage(from: item)
-            // Background removal is best-effort: if it fails we keep every pixel
-            // so the user can still erase manually.
-            var mask: CGImage?
-            if let extraction = try? await BackgroundRemover.extractSubject(from: base) {
-                mask = extraction.mask
-            }
-            let editor = MaskEditor(base: base, mask: mask, maxDimension: 1024)
-            self.editor = editor
-            backgroundRemoved = editor.hasSubject
-        } catch {
-            loadErrorMessage = error.localizedDescription
+        guard let loaded = StickerSourceStore.image(for: source) else {
+            loadErrorMessage = "Couldn't read this sticker's image."
+            return
         }
+        let base = loaded.upNormalized() ?? loaded
+
+        // Background removal is best-effort: if it fails we keep every pixel
+        // so the user can still erase manually.
+        var mask: CGImage?
+        if let extraction = try? await BackgroundRemover.extractSubject(from: base) {
+            mask = extraction.mask
+        }
+        let editor = MaskEditor(base: base, mask: mask, maxDimension: 1024)
+        self.editor = editor
+        backgroundRemoved = editor.hasSubject
     }
 
     private func retry() {

@@ -67,12 +67,12 @@ struct AddStickerSheet: View {
     @ViewBuilder
     private func editor(for task: EditTask) -> some View {
         switch task.kind {
-        case .still(let item):
-            StickerEditorView(item: item) { image in
-                pendingResult = Result { try StickerFactory.encodeStatic(image) }
+        case .still(let source):
+            StickerEditorView(source: source) { image in
+                pendingResult = Result { try StickerFactory.encodeStatic(image, source: source) }
             }
-        case .video(let item):
-            VideoTrimView(item: item) { sticker in
+        case .video(let source):
+            VideoTrimView(source: source) { sticker in
                 pendingResult = .success(sticker)
             }
         }
@@ -173,16 +173,19 @@ struct AddStickerSheet: View {
 
         for item in selection {
             do {
-                if isVideo(item) {
-                    // Videos are trimmed by hand; a cancelled trim skips that item.
-                    guard let result = await edit(.video(item)) else { continue }
+                let source = try await StickerSourceStore.importPicked(item)
+                switch source {
+                case .image:
+                    // Stills open the editor; a cancelled editor skips that item.
+                    guard let result = await edit(.still(source)) else { continue }
                     try apply(result)
-                } else if isGIF(item) {
-                    let sticker = try await StickerFactory.makeSticker(from: item)
+                case .video:
+                    // Videos open the trim screen; a cancelled trim skips that item.
+                    guard let result = await edit(.video(source)) else { continue }
+                    try apply(result)
+                case .gif:
+                    let sticker = try await StickerFactory.makeAnimatedSticker(fromGIFSource: source)
                     try store.add(sticker, to: packID)
-                } else {
-                    guard let result = await edit(.still(item)) else { continue }
-                    try apply(result)
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -203,19 +206,9 @@ struct AddStickerSheet: View {
         }
     }
 
-    private func isVideo(_ item: PhotosPickerItem) -> Bool {
-        item.supportedContentTypes.contains { $0.conforms(to: .movie) }
-    }
-
-    private func isGIF(_ item: PhotosPickerItem) -> Bool {
-        item.supportedContentTypes.contains { $0.conforms(to: .gif) }
-    }
-
-    /// A lone still opens its editor right away so the step can't be missed.
+    /// A lone pick opens its editor/trim right away so the step can't be missed.
     private func autoOpenEditorIfNeeded(_ items: [PhotosPickerItem]) {
-        guard !isProcessing, editing == nil, remaining > 0,
-              items.count == 1, let item = items.first,
-              !isVideo(item), !isGIF(item) else { return }
+        guard !isProcessing, editing == nil, remaining > 0, items.count == 1 else { return }
 
         Task {
             // Let the photo picker finish dismissing before presenting the editor.
@@ -246,8 +239,8 @@ struct AddStickerSheet: View {
 
     private struct EditTask: Identifiable {
         enum Kind {
-            case still(PhotosPickerItem)
-            case video(PhotosPickerItem)
+            case still(StickerSource)
+            case video(StickerSource)
         }
 
         let id = UUID()

@@ -17,22 +17,35 @@ enum StickerEncoder {
 
     // MARK: - Animated
 
-    /// Animated sticker from frames. Must respect the 500 KB total budget by
-    /// lowering quality and, if needed, dropping frames — then honour the
-    /// 8 ms / 10 s limits.
+    /// Budget for animated stickers. WhatsApp enforces ~500 KB, so keep headroom.
+    private static let animatedByteBudget = 450 * 1024
+
+    /// Short, fast quality ladder for animated WebP. Hard compression (method 6,
+    /// 10 passes, alpha quality 60) is applied at every step.
+    private static let animatedQualities: [Double] = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3]
+
+    /// Animated sticker from frames. Compresses hard on the full frame set first;
+    /// only if that can't fit the 450 KB budget does it drop frames (keeping ≥ 2).
     ///
-    /// Requires at least two frames; returning nil on a single frame avoids
-    /// emitting an invalid "animated" payload. The frame ladder is bounded
-    /// (full, half, 12, 9, 6), so the number of encodes is finite.
+    /// The canvas stays exactly 512×512 (a WhatsApp requirement — dimensions are
+    /// never reduced). Requires at least two frames; one frame is not a valid
+    /// animated payload.
     static func animatedSticker(from frames: [Frame], loopCount: Int = 0) -> Data? {
         guard frames.count >= 2 else { return nil }
         let prepared = prepare(frames)
         guard prepared.count >= 2 else { return nil }
 
         let loop = UInt(max(0, loopCount))
-        var attempted = Set<Int>()
+
+        // Compress harder before dropping any frames.
+        if let data = encodeAnimated(prepared, loopCount: loop) {
+            return data
+        }
+
+        // Quality alone wasn't enough: drop frames, never below two.
+        var attempted = Set<Int>([prepared.count])
         for candidate in frameLadder(prepared) {
-            guard attempted.insert(candidate.count).inserted else { continue }
+            guard candidate.count >= 2, attempted.insert(candidate.count).inserted else { continue }
             if let data = encodeAnimated(candidate, loopCount: loop) {
                 return data
             }
@@ -78,22 +91,26 @@ enum StickerEncoder {
         return nil
     }
 
-    /// Same quality ladder as `encode`, but for the animated WebP API. There is
-    /// no total-size option, so the caller checks `data.count` against the budget.
-    /// Each attempt runs in its own autorelease pool so peak memory stays flat.
+    /// Encodes `frames` as animated WebP, trying the short quality ladder with
+    /// hard compression options. Each attempt runs in its own autorelease pool so
+    /// peak memory stays flat. Returns the first result within budget.
     private static func encodeAnimated(_ frames: [Frame], loopCount: UInt) -> Data? {
         let sdFrames = frames.map { SDImageFrame(image: $0.image, duration: $0.duration) }
-        for step in 0...14 {
-            let quality = 1.0 - Double(step) * 0.05
+        for quality in animatedQualities {
             let data = autoreleasepool { () -> Data? in
                 SDImageWebPCoder.shared.encodedData(
                     with: sdFrames,
                     loopCount: loopCount,
                     format: .webP,
-                    options: [.encodeCompressionQuality: quality]
+                    options: [
+                        .encodeCompressionQuality: quality,
+                        .encodeWebPMethod: 6,
+                        .encodeWebPPass: 10,
+                        .encodeWebPAlphaQuality: 60
+                    ]
                 )
             }
-            if let data, data.count <= Limits.maxAnimatedBytes {
+            if let data, data.count <= animatedByteBudget {
                 return data
             }
         }
@@ -126,15 +143,14 @@ enum StickerEncoder {
         return prepared
     }
 
-    /// Full frames first, then progressively fewer (every 2nd, 12, 9, 6).
+    /// Progressively fewer frames: every 2nd, then 12, 9, 6 — never the full set
+    /// (the caller tries that first) and never below two.
     private static func frameLadder(_ frames: [Frame]) -> [[Frame]] {
-        var ladder: [[Frame]] = [frames]
         var counts = Set<Int>()
-        if frames.count > 1 { counts.insert(frames.count / 2) }
+        if frames.count > 2 { counts.insert(frames.count / 2) }
         [12, 9, 6].forEach { counts.insert($0) }
-        let valid = counts.filter { $0 >= 1 && $0 < frames.count }.sorted(by: >)
-        ladder.append(contentsOf: valid.map { resample(frames, to: $0) })
-        return ladder
+        let valid = counts.filter { $0 >= 2 && $0 < frames.count }.sorted(by: >)
+        return valid.map { resample(frames, to: $0) }
     }
 
     /// Picks `count` evenly-spaced frames and spreads the total duration across

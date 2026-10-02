@@ -1,7 +1,5 @@
 import UIKit
-import SwiftUI
 import PhotosUI
-import CoreTransferable
 import UniformTypeIdentifiers
 
 /// Orchestrates: picked item → frames/image → background removal → encode → StickerItem.
@@ -24,19 +22,30 @@ enum StickerFactory {
     }
 
     /// Turns a picked photo, video, or GIF into a ready-to-use sticker.
+    ///
+    /// Video and GIF stickers also persist their original media so they can be
+    /// re-opened in the editor.
     static func makeSticker(from item: PhotosPickerItem) async throws -> StickerItem {
         let types = item.supportedContentTypes
 
         if types.contains(where: { $0.conforms(to: .movie) }) {
-            let url = try await movieURL(from: item)
-            let frames = try await FrameExtractor.frames(fromVideoAt: url, maxFrames: 30)
-            return try await makeAnimated(from: frames, removeBackground: false)
+            let source = try await StickerSourceStore.importPicked(item)
+            guard case .video = source else { throw Failure.unsupported }
+            let frames = try await FrameExtractor.frames(
+                fromVideoAt: StickerSourceStore.url(for: source),
+                maxFrames: 30
+            )
+            return try await makeAnimated(from: frames, removeBackground: false, source: source)
         }
 
         if types.contains(where: { $0.conforms(to: .gif) }) {
-            let data = try await imageData(from: item)
+            let source = try await StickerSourceStore.importPicked(item)
+            guard case .gif = source else { throw Failure.unsupported }
+            guard let data = try? Data(contentsOf: StickerSourceStore.url(for: source)) else {
+                throw Failure.empty
+            }
             let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
-            return try await makeAnimated(from: frames, removeBackground: false)
+            return try await makeAnimated(from: frames, removeBackground: false, source: source)
         }
 
         if types.contains(where: { $0.conforms(to: .image) }) {
@@ -67,12 +76,18 @@ enum StickerFactory {
     }
 
     /// Encodes an already-prepared image into a static sticker (no background removal).
-    static func encodeStatic(_ image: UIImage) throws -> StickerItem {
+    static func encodeStatic(_ image: UIImage, source: StickerSource? = nil) throws -> StickerItem {
         guard let stickerData = StickerEncoder.staticSticker(from: image),
               let previewData = StickerEncoder.previewPNG(from: image, size: 512) else {
             throw Failure.failed("Couldn't encode this sticker.")
         }
-        return StickerItem(kind: .static, emojis: [], stickerData: stickerData, previewData: previewData)
+        return StickerItem(
+            kind: .static,
+            emojis: [],
+            stickerData: stickerData,
+            previewData: previewData,
+            source: source
+        )
     }
 
     /// Loads a picked movie into a temporary file and reports its duration.
@@ -80,6 +95,12 @@ enum StickerFactory {
     static func loadVideoDraft(from item: PhotosPickerItem) async throws -> VideoDraft {
         let url = try await movieURL(from: item)
         return try await FrameExtractor.videoDraft(from: url)
+    }
+
+    /// Loads a stored video source so it can be trimmed again.
+    static func loadVideoDraft(from source: StickerSource) async throws -> VideoDraft {
+        guard case .video = source else { throw Failure.unsupported }
+        return try await FrameExtractor.videoDraft(from: StickerSourceStore.url(for: source))
     }
 
     /// Builds an animated sticker from a trimmed video range at the given fps.
@@ -90,13 +111,28 @@ enum StickerFactory {
         from draft: VideoDraft,
         range: ClosedRange<TimeInterval>,
         fps: Double,
-        removeBackground: Bool = false
+        removeBackground: Bool = false,
+        source: StickerSource? = nil
     ) async throws -> StickerItem {
         let frames = try await FrameExtractor.frames(fromVideoAt: draft.url, range: range, fps: fps)
-        return try await makeAnimated(from: frames, removeBackground: removeBackground)
+        return try await makeAnimated(from: frames, removeBackground: removeBackground, source: source)
     }
 
-    private static func makeAnimated(from frames: [Frame], removeBackground: Bool) async throws -> StickerItem {
+    /// Rebuilds an animated sticker from a stored GIF source.
+    static func makeAnimatedSticker(fromGIFSource source: StickerSource) async throws -> StickerItem {
+        guard case .gif = source else { throw Failure.unsupported }
+        guard let data = try? Data(contentsOf: StickerSourceStore.url(for: source)) else {
+            throw Failure.empty
+        }
+        let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
+        return try await makeAnimated(from: frames, removeBackground: false, source: source)
+    }
+
+    private static func makeAnimated(
+        from frames: [Frame],
+        removeBackground: Bool,
+        source: StickerSource?
+    ) async throws -> StickerItem {
         guard !frames.isEmpty else { throw Failure.empty }
 
         // Only run Vision when explicitly asked. If the first frame can't be
@@ -113,7 +149,13 @@ enum StickerFactory {
             throw Failure.failed("Couldn't encode this animated sticker.")
         }
 
-        return StickerItem(kind: .animated, emojis: [], stickerData: stickerData, previewData: previewData)
+        return StickerItem(
+            kind: .animated,
+            emojis: [],
+            stickerData: stickerData,
+            previewData: previewData,
+            source: source
+        )
     }
 
     /// Background-removes every frame. Returns nil when the first frame fails,
@@ -157,23 +199,6 @@ enum StickerFactory {
             throw failure
         } catch {
             throw Failure.failed(error.localizedDescription)
-        }
-    }
-}
-
-/// Copies a picked movie into a temporary file so it can be read by AVFoundation.
-private struct MovieFile: Transferable {
-    let url: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(contentType: .movie) { movie in
-            SentTransferredFile(movie.url)
-        } importing: { received in
-            let copy = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString)
-                .appendingPathExtension(received.file.pathExtension)
-            try FileManager.default.copyItem(at: received.file, to: copy)
-            return MovieFile(url: copy)
         }
     }
 }
