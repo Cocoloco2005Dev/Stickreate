@@ -30,13 +30,13 @@ enum StickerFactory {
         if types.contains(where: { $0.conforms(to: .movie) }) {
             let url = try await movieURL(from: item)
             let frames = try await FrameExtractor.frames(fromVideoAt: url, maxFrames: 30)
-            return try await makeAnimated(from: frames)
+            return try await makeAnimated(from: frames, removeBackground: false)
         }
 
         if types.contains(where: { $0.conforms(to: .gif) }) {
             let data = try await imageData(from: item)
             let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
-            return try await makeAnimated(from: frames)
+            return try await makeAnimated(from: frames, removeBackground: false)
         }
 
         if types.contains(where: { $0.conforms(to: .image) }) {
@@ -83,20 +83,30 @@ enum StickerFactory {
     }
 
     /// Builds an animated sticker from a trimmed video range at the given fps.
+    ///
+    /// Background removal is opt-in (off by default): per-frame Vision is slow
+    /// and memory-hungry, and video stickers rarely need it.
     static func makeAnimatedSticker(
         from draft: VideoDraft,
         range: ClosedRange<TimeInterval>,
-        fps: Double
+        fps: Double,
+        removeBackground: Bool = false
     ) async throws -> StickerItem {
         let frames = try await FrameExtractor.frames(fromVideoAt: draft.url, range: range, fps: fps)
-        return try await makeAnimated(from: frames)
+        return try await makeAnimated(from: frames, removeBackground: removeBackground)
     }
 
-    private static func makeAnimated(from frames: [Frame]) async throws -> StickerItem {
+    private static func makeAnimated(from frames: [Frame], removeBackground: Bool) async throws -> StickerItem {
         guard !frames.isEmpty else { throw Failure.empty }
 
-        // If the first frame can't be cut, keep the original frames for all.
-        let usable = await cutOut(frames) ?? frames
+        // Only run Vision when explicitly asked. If the first frame can't be
+        // cut, keep the original frames for all.
+        let usable: [Frame]
+        if removeBackground {
+            usable = await cutOut(frames) ?? frames
+        } else {
+            usable = frames
+        }
 
         guard let stickerData = StickerEncoder.animatedSticker(from: usable),
               let previewData = StickerEncoder.previewPNG(from: usable[0].image, size: 512) else {

@@ -20,9 +20,14 @@ enum StickerEncoder {
     /// Animated sticker from frames. Must respect the 500 KB total budget by
     /// lowering quality and, if needed, dropping frames — then honour the
     /// 8 ms / 10 s limits.
+    ///
+    /// Requires at least two frames; returning nil on a single frame avoids
+    /// emitting an invalid "animated" payload. The frame ladder is bounded
+    /// (full, half, 12, 9, 6), so the number of encodes is finite.
     static func animatedSticker(from frames: [Frame], loopCount: Int = 0) -> Data? {
+        guard frames.count >= 2 else { return nil }
         let prepared = prepare(frames)
-        guard !prepared.isEmpty else { return nil }
+        guard prepared.count >= 2 else { return nil }
 
         let loop = UInt(max(0, loopCount))
         var attempted = Set<Int>()
@@ -59,11 +64,14 @@ enum StickerEncoder {
     private static func encode(_ image: UIImage, maxBytes: Int) -> Data? {
         for step in 0...14 {
             let quality = 1.0 - Double(step) * 0.05
-            if let data = SDImageWebPCoder.shared.encodedData(
-                with: image,
-                format: .webP,
-                options: [.encodeCompressionQuality: quality]
-            ), data.count <= maxBytes {
+            let data = autoreleasepool { () -> Data? in
+                SDImageWebPCoder.shared.encodedData(
+                    with: image,
+                    format: .webP,
+                    options: [.encodeCompressionQuality: quality]
+                )
+            }
+            if let data, data.count <= maxBytes {
                 return data
             }
         }
@@ -72,16 +80,20 @@ enum StickerEncoder {
 
     /// Same quality ladder as `encode`, but for the animated WebP API. There is
     /// no total-size option, so the caller checks `data.count` against the budget.
+    /// Each attempt runs in its own autorelease pool so peak memory stays flat.
     private static func encodeAnimated(_ frames: [Frame], loopCount: UInt) -> Data? {
         let sdFrames = frames.map { SDImageFrame(image: $0.image, duration: $0.duration) }
         for step in 0...14 {
             let quality = 1.0 - Double(step) * 0.05
-            if let data = SDImageWebPCoder.shared.encodedData(
-                with: sdFrames,
-                loopCount: loopCount,
-                format: .webP,
-                options: [.encodeCompressionQuality: quality]
-            ), data.count <= Limits.maxAnimatedBytes {
+            let data = autoreleasepool { () -> Data? in
+                SDImageWebPCoder.shared.encodedData(
+                    with: sdFrames,
+                    loopCount: loopCount,
+                    format: .webP,
+                    options: [.encodeCompressionQuality: quality]
+                )
+            }
+            if let data, data.count <= Limits.maxAnimatedBytes {
                 return data
             }
         }
@@ -94,8 +106,10 @@ enum StickerEncoder {
     /// floor and scales the whole animation down to the 10 s ceiling.
     private static func prepare(_ frames: [Frame]) -> [Frame] {
         var prepared = frames.compactMap { frame -> Frame? in
-            guard let canvas = aspectFit(frame.image, in: canvasSize) else { return nil }
-            return Frame(image: canvas, duration: max(frame.duration, Limits.minFrameDuration))
+            autoreleasepool { () -> Frame? in
+                guard let canvas = aspectFit(frame.image, in: canvasSize) else { return nil }
+                return Frame(image: canvas, duration: max(frame.duration, Limits.minFrameDuration))
+            }
         }
 
         let total = prepared.reduce(0) { $0 + $1.duration }
@@ -176,6 +190,27 @@ extension UIImage {
         format.scale = scale
         return UIGraphicsImageRenderer(size: size, format: format).image { _ in
             draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    /// Returns a copy whose longest side is at most `maxDimension` pixels.
+    /// Returns `self` when already small enough.
+    func scaled(toMaxDimension maxDimension: CGFloat) -> UIImage {
+        let pixelWidth = size.width * scale
+        let pixelHeight = size.height * scale
+        let longest = max(pixelWidth, pixelHeight)
+        guard maxDimension > 0, longest > maxDimension else { return self }
+
+        let ratio = maxDimension / longest
+        let target = CGSize(
+            width: max(1, (pixelWidth * ratio).rounded()),
+            height: max(1, (pixelHeight * ratio).rounded())
+        )
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            draw(in: CGRect(origin: .zero, size: target))
         }
     }
 }

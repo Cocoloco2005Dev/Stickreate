@@ -12,10 +12,13 @@ import QuartzCore
 @MainActor
 @Observable
 final class MaskEditor {
-    /// Upright original image.
+    /// Upright original image, downscaled to the `maxDimension` cap.
     let base: UIImage
     /// `base` composited through the current mask.
     private(set) var preview: UIImage
+
+    /// True when Vision supplied a subject mask at init.
+    private(set) var hasSubject: Bool
 
     /// Brush radius as a fraction of the shorter side (clamped 0.02...0.3).
     var brushRadius: CGFloat = 0.08
@@ -25,7 +28,12 @@ final class MaskEditor {
     private let pixelWidth: Int
     private let pixelHeight: Int
     private var maskData: [UInt8]
-    private let seededMask: [UInt8]
+    /// All-white mask (keep everything).
+    private let whiteMask: [UInt8]
+    /// Vision's subject mask, when one was supplied.
+    private let subjectMask: [UInt8]?
+    /// Whether the subject cut-out is currently in use.
+    private var backgroundRemoved: Bool
     private var undoStack: [[UInt8]] = []
 
     /// Guards against out-of-order preview publishes during fast strokes.
@@ -37,20 +45,28 @@ final class MaskEditor {
     private let maxUndoCount = 20
     private let maxUndoBytes = 96 * 1024 * 1024
 
-    /// - Parameter mask: Vision's subject mask; `nil` starts with everything kept.
-    init(base: UIImage, mask: CGImage?) {
-        self.base = base
-        let cgImage = base.cgImage
-        let width = max(1, cgImage?.width ?? Int((base.size.width * base.scale).rounded()))
-        let height = max(1, cgImage?.height ?? Int((base.size.height * base.scale).rounded()))
+    /// - Parameters:
+    ///   - mask: Vision's subject mask; `nil` starts with everything kept.
+    ///   - maxDimension: longest side the base image is downscaled to so all
+    ///     mask/composite work stays cheap.
+    init(base: UIImage, mask: CGImage?, maxDimension: Int = 1024) {
+        let scaledBase = base.scaled(toMaxDimension: CGFloat(maxDimension))
+        self.base = scaledBase
+
+        let cgImage = scaledBase.cgImage
+        let width = max(1, cgImage?.width ?? Int((scaledBase.size.width * scaledBase.scale).rounded()))
+        let height = max(1, cgImage?.height ?? Int((scaledBase.size.height * scaledBase.scale).rounded()))
         self.pixelWidth = width
         self.pixelHeight = height
 
-        let seeded = mask.map { MaskCompositor.seed(bytesFrom: $0, width: width, height: height) }
-            ?? [UInt8](repeating: 255, count: width * height)
-        self.seededMask = seeded
-        self.maskData = seeded
-        self.preview = base
+        let white = [UInt8](repeating: 255, count: width * height)
+        let subject = mask.map { MaskCompositor.seed(bytesFrom: $0, width: width, height: height) }
+        self.whiteMask = white
+        self.subjectMask = subject
+        self.hasSubject = subject != nil
+        self.backgroundRemoved = subject != nil
+        self.maskData = subject ?? white
+        self.preview = scaledBase
 
         refreshPreview()
     }
@@ -97,9 +113,24 @@ final class MaskEditor {
         refreshPreview()
     }
 
-    /// Restores the mask seeded at init time.
+    /// Switches between Vision's subject cut-out and keeping everything.
+    /// Cheap: swaps which of the two mask snapshots is active.
+    func setBackgroundRemoved(_ removed: Bool) {
+        guard removed != backgroundRemoved else { return }
+        if removed {
+            guard let subjectMask else { return }
+            backgroundRemoved = true
+            maskData = subjectMask
+        } else {
+            backgroundRemoved = false
+            maskData = whiteMask
+        }
+        refreshPreview()
+    }
+
+    /// Restores the mask seeded at init, keeping the current background mode.
     func reset() {
-        maskData = seededMask
+        maskData = backgroundRemoved ? (subjectMask ?? whiteMask) : whiteMask
         undoStack.removeAll()
         refreshPreview()
     }

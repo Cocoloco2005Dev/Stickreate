@@ -103,16 +103,28 @@ enum WhatsAppExporter {
         // LiveContainer that query returns false even though opening the scheme
         // passes through to the real installed WhatsApp. Attempting the open is
         // the source of truth; if WhatsApp is missing, nothing happens.
+        //
+        // Error 1000 is an undocumented catch-all caused by a pasteboard/open
+        // race ("error, then it works"): clear stale entries, write, then give
+        // the pasteboard a beat before opening WhatsApp exactly once.
+        UIPasteboard.general.items = []
         let pasteboardItem: [String: Any] = [pasteboardType: data]
         UIPasteboard.general.setItems(
             [pasteboardItem],
             options: [.localOnly: true, .expirationDate: Date(timeIntervalSinceNow: 60)]
         )
 
-        guard let url = URL(string: "whatsapp://stickerPack") else {
-            throw Failure.invalid("Couldn't open WhatsApp.")
+        openWhatsApp(after: 0.7)
+    }
+
+    /// Opens WhatsApp's sticker importer once, after `delay`, on the main actor.
+    private static func openWhatsApp(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            MainActor.assumeIsolated {
+                guard let url = URL(string: "whatsapp://stickerPack") else { return }
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            }
         }
-        UIApplication.shared.open(url, options: [:], completionHandler: nil)
     }
 
     /// Identifier charset WhatsApp accepts: a-z A-Z 0-9 _ - . and space, ≤ 128.

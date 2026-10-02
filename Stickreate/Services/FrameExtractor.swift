@@ -20,6 +20,13 @@ enum FrameExtractor {
 
     // MARK: - Video
 
+    /// Decode tolerance: exact seeks are far too slow for frame sampling.
+    private static let frameTolerance = CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600)
+
+    /// Longest side of a decoded video frame. Keeps 4K sources from allocating
+    /// ~35 MB per frame while still exceeding the 512 pt sticker canvas.
+    private static let frameMaxDimension: CGFloat = 512
+
     /// Loads a video's duration without extracting any frames.
     static func videoDraft(from url: URL) async throws -> VideoDraft {
         let duration = try await loadDuration(of: url)
@@ -27,14 +34,21 @@ enum FrameExtractor {
     }
 
     /// A single still at `time`, with the preferred track transform applied.
+    /// Decoded off the main thread; the decode runs in its own autorelease pool.
     static func thumbnail(fromVideoAt url: URL, at time: TimeInterval) async throws -> UIImage? {
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
         let cmTime = CMTime(seconds: max(0, time), preferredTimescale: 600)
-        guard let result = try? await generator.image(at: cmTime) else { return nil }
-        return UIImage(cgImage: result.image)
+        let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 1024, height: 1024)
+            generator.requestedTimeToleranceBefore = frameTolerance
+            generator.requestedTimeToleranceAfter = frameTolerance
+            return autoreleasepool {
+                guard let cgImage = try? generator.copyCGImage(at: cmTime, actualTime: nil) else { return nil }
+                return UIImage(cgImage: cgImage)
+            }
+        }
+        return await task.value
     }
 
     /// Extracts evenly-spaced frames from a video, capped at `maxFrames`.
@@ -69,17 +83,36 @@ enum FrameExtractor {
         let step = span / Double(count)
         let frameDuration = max(1 / clampedFPS, Limits.minFrameDuration)
 
+        let times = (0..<count).map {
+            CMTime(seconds: lower + step * Double($0), preferredTimescale: 600)
+        }
+        let task = Task.detached(priority: .userInitiated) {
+            try decodeFrames(url: url, times: times, frameDuration: frameDuration)
+        }
+        return try await task.value
+    }
+
+    /// Decodes `times` off the main thread. Each decode and conversion runs in
+    /// its own autorelease pool so 4K sources never pile up frames in memory.
+    private static func decodeFrames(
+        url: URL,
+        times: [CMTime],
+        frameDuration: TimeInterval
+    ) throws -> [Frame] {
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
+        generator.maximumSize = CGSize(width: 1024, height: 1024)
+        generator.requestedTimeToleranceBefore = frameTolerance
+        generator.requestedTimeToleranceAfter = frameTolerance
 
         var frames: [Frame] = []
-        for index in 0..<count {
-            let time = CMTime(seconds: lower + step * Double(index), preferredTimescale: 600)
-            let result = try? await generator.image(at: time)
-            guard let cgImage = result?.image else { continue }
-            frames.append(Frame(image: UIImage(cgImage: cgImage), duration: frameDuration))
+        for time in times {
+            let frame: Frame? = autoreleasepool {
+                guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
+                let image = UIImage(cgImage: cgImage).scaled(toMaxDimension: frameMaxDimension)
+                return Frame(image: image, duration: frameDuration)
+            }
+            if let frame { frames.append(frame) }
         }
 
         guard !frames.isEmpty else { throw Failure.empty }
@@ -113,9 +146,14 @@ enum FrameExtractor {
         var frames: [Frame] = []
         var index = 0
         while index < total {
-            if let cgImage = CGImageSourceCreateImageAtIndex(source, index, nil) {
+            let frame = autoreleasepool { () -> Frame? in
+                guard let cgImage = CGImageSourceCreateImageAtIndex(source, index, nil) else { return nil }
                 let delay = max(frameDelay(source: source, index: index), Limits.minFrameDuration)
-                frames.append(Frame(image: UIImage(cgImage: cgImage), duration: delay))
+                let image = UIImage(cgImage: cgImage).scaled(toMaxDimension: frameMaxDimension)
+                return Frame(image: image, duration: delay)
+            }
+            if let frame {
+                frames.append(frame)
             }
             index += step
         }

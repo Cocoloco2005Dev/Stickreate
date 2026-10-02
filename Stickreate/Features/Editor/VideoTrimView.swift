@@ -4,10 +4,11 @@ import PhotosUI
 
 /// Trims a picked video and turns it into an animated sticker.
 ///
-/// The clip is chosen with a two-handle range control (WhatsApp caps animations
-/// at 10 s) and a frame-rate control shows the estimated frame count live. The
-/// final encode runs through `StickerFactory.makeAnimatedSticker`, which drops
-/// frames automatically if the file would exceed WhatsApp's 500 KB budget.
+/// The draft's duration loads first and the trim controls appear immediately;
+/// the timeline thumbnails are decoration and stream in afterwards without ever
+/// gating the UI. The final encode runs through
+/// `StickerFactory.makeAnimatedSticker`, which drops frames automatically if the
+/// file would exceed WhatsApp's 500 KB budget.
 @MainActor
 struct VideoTrimView: View {
     let item: PhotosPickerItem
@@ -22,19 +23,21 @@ struct VideoTrimView: View {
 
     @State private var lowerBound: TimeInterval = 0
     @State private var upperBound: TimeInterval = 0
-    @State private var fps: Double = 10
+    @State private var fps: Int = 10
 
     @State private var thumbnails: [UIImage] = []
 
     @State private var isCreating = false
     @State private var errorMessage: String?
 
+    private static let fpsOptions = [5, 10, 15, 20]
+
     private var clipLength: TimeInterval {
         max(0, upperBound - lowerBound)
     }
 
     private var estimatedFrames: Int {
-        max(1, Int((fps * clipLength).rounded()))
+        max(1, Int((Double(fps) * clipLength).rounded()))
     }
 
     var body: some View {
@@ -90,6 +93,7 @@ struct VideoTrimView: View {
             } description: {
                 Text(loadErrorMessage ?? "Try choosing a different video.")
             } actions: {
+                Button("Try Again") { retry() }
                 Button("Close") { dismiss() }
             }
         }
@@ -139,7 +143,7 @@ struct VideoTrimView: View {
             LabeledContent("Clip length", value: "\(seconds(clipLength)) s")
 
             if draft.duration > Limits.maxAnimationDuration {
-                Text("WhatsApp caps animated stickers at \(Int(Limits.maxAnimationDuration)) seconds, so the clip is limited to that.")
+                Text("WhatsApp caps animated stickers at \(Int(Limits.maxAnimationDuration)) s, so the clip is limited to that.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -148,29 +152,32 @@ struct VideoTrimView: View {
     }
 
     private var fpsControl: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Frame rate")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("\(Int(fps)) fps")
+                Text("\(fps) fps")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
 
-            Slider(value: $fps, in: 3...20, step: 1) {
-                Text("Frame rate")
+            Picker("Frame rate", selection: $fps) {
+                ForEach(Self.fpsOptions, id: \.self) { value in
+                    Text("\(value)").tag(value)
+                }
             }
+            .pickerStyle(.segmented)
             .accessibilityLabel("Frame rate")
-            .accessibilityValue(Text("\(Int(fps)) frames per second"))
+            .accessibilityValue(Text("\(fps) frames per second"))
 
             Text("≈ \(estimatedFrames) frames")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
 
-            Text("WhatsApp caps animated stickers at 500 KB, so very high frame rates may be reduced automatically.")
+            Text("More frames per second looks smoother — like a good GIF — but WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so larger clips may be reduced automatically.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -183,34 +190,50 @@ struct VideoTrimView: View {
         guard !didLoad else { return }
         didLoad = true
         isLoading = true
-        defer { isLoading = false }
 
         do {
             let loaded = try await StickerFactory.loadVideoDraft(from: item)
             guard loaded.duration > 0 else {
+                isLoading = false
                 loadErrorMessage = "This video has no duration."
                 return
             }
             draft = loaded
             lowerBound = 0
             upperBound = min(loaded.duration, Limits.maxAnimationDuration)
-            await loadThumbnails(for: loaded)
+            // Show the trim controls right away; thumbnails are decoration.
+            isLoading = false
+            startThumbnailLoad(for: loaded)
         } catch {
+            isLoading = false
             loadErrorMessage = error.localizedDescription
         }
     }
 
-    @MainActor
-    private func loadThumbnails(for draft: VideoDraft) async {
-        let count = 8
-        var images: [UIImage] = []
-        for index in 0..<count {
-            let position = draft.duration * (Double(index) + 0.5) / Double(count)
-            if let image = try? await FrameExtractor.thumbnail(fromVideoAt: draft.url, at: position) {
-                images.append(image)
+    private func retry() {
+        didLoad = false
+        loadErrorMessage = nil
+        isLoading = true
+        Task { await load() }
+    }
+
+    /// Streams timeline thumbnails in the background, appending as they arrive.
+    /// Never gates the UI; a failure just leaves fewer thumbnails.
+    private func startThumbnailLoad(for draft: VideoDraft) {
+        let url = draft.url
+        let duration = draft.duration
+        Task.detached(priority: .utility) {
+            let count = 8
+            for index in 0..<count {
+                let position = duration * (Double(index) + 0.5) / Double(count)
+                guard let image = try? await FrameExtractor.thumbnail(fromVideoAt: url, at: position) else {
+                    continue
+                }
+                await MainActor.run {
+                    thumbnails.append(image)
+                }
             }
         }
-        thumbnails = images
     }
 
     // MARK: - Create
@@ -226,7 +249,7 @@ struct VideoTrimView: View {
                 let sticker = try await StickerFactory.makeAnimatedSticker(
                     from: draft,
                     range: range,
-                    fps: fps
+                    fps: Double(fps)
                 )
                 isCreating = false
                 onDone(sticker)

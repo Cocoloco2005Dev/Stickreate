@@ -2,12 +2,10 @@ import SwiftUI
 import UIKit
 import PhotosUI
 
-/// Focused editor for a single still image.
-///
-/// The image loads upright, then Apple's Vision pass seeds an editable subject
-/// mask. From there the user can erase or restore parts of the background with
-/// a brush, undo, reset, and crop. The canvas is the content layer (opaque
-/// checkerboard + image); every tool lives in the toolbar.
+/// Focused editor for a single still image, laid out like the iOS markup editor:
+/// a square canvas on a checkerboard, a bottom tool row (Crop, Remove Background,
+/// Erase, Restore), and a contextual row for the active tool. Cancel sits on the
+/// left of the nav bar, Done (the single prominent action) on the right.
 @MainActor
 struct StickerEditorView: View {
     let item: PhotosPickerItem
@@ -20,8 +18,15 @@ struct StickerEditorView: View {
     @State private var didLoad = false
     @State private var loadErrorMessage: String?
 
-    @State private var isErasing = true
-    @State private var isCropping = false
+    private enum Tool: Equatable {
+        case crop
+        case erase
+        case restore
+    }
+
+    @State private var activeTool: Tool?
+    @State private var backgroundRemoved = false
+
     @State private var cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
     @State private var cropDragging = false
     @State private var cropActiveHandle: CropHandle?
@@ -35,6 +40,11 @@ struct StickerEditorView: View {
                 .navigationTitle("Edit Sticker")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { toolbarContent }
+                .safeAreaInset(edge: .bottom) {
+                    if editor != nil {
+                        bottomControls
+                    }
+                }
         }
         .task { await load() }
     }
@@ -58,6 +68,7 @@ struct StickerEditorView: View {
             } description: {
                 Text(loadErrorMessage ?? "Try choosing a different photo.")
             } actions: {
+                Button("Try Again") { retry() }
                 Button("Close") { dismiss() }
             }
         }
@@ -87,7 +98,7 @@ struct StickerEditorView: View {
         .frame(width: side, height: side)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
-            if isCropping {
+            if activeTool == .crop {
                 cropOverlay(origin: origin, displaySize: displaySize, canvasSize: side)
             }
         }
@@ -101,7 +112,7 @@ struct StickerEditorView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel") { dismiss() }
+            Button("Cancel") { cancel() }
         }
 
         ToolbarItem(placement: .confirmationAction) {
@@ -109,20 +120,105 @@ struct StickerEditorView: View {
                 .buttonStyle(.glassProminent)
                 .disabled(editor == nil)
         }
+    }
 
-        ToolbarItemGroup(placement: .bottomBar) {
-            Button {
-                isErasing.toggle()
-            } label: {
-                Label(
-                    isErasing ? "Erase" : "Restore",
-                    systemImage: isErasing ? "eraser" : "paintbrush.pointed"
-                )
+    // MARK: - Bottom controls (control layer)
+
+    private var bottomControls: some View {
+        VStack(spacing: 10) {
+            if showStatus {
+                statusLine
             }
-            .disabled(editor == nil)
-            .accessibilityLabel(isErasing ? "Erase tool" : "Restore tool")
-            .accessibilityHint("Switches to \(isErasing ? "restore" : "erase")")
+            if activeTool != nil {
+                contextualRow
+            }
+            toolRow
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
 
+    private var showStatus: Bool {
+        guard let editor else { return false }
+        return !editor.hasSubject || (hasCrop && activeTool != .crop)
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        if let editor {
+            if !editor.hasSubject {
+                Text("No subject detected — use Erase to clean up the background.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            } else if hasCrop && activeTool != .crop {
+                HStack(spacing: 8) {
+                    Label("Cropped region applied", systemImage: "crop")
+                    Spacer(minLength: 0)
+                    Button("Reset") { resetCrop() }
+                        .foregroundStyle(Color.accentColor)
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contextualRow: some View {
+        if activeTool == .erase || activeTool == .restore {
+            brushRow
+        } else if activeTool == .crop {
+            cropRow
+        }
+    }
+
+    private var toolRow: some View {
+        HStack(spacing: 8) {
+            toolButton("Crop", symbol: "crop", active: activeTool == .crop) {
+                toggleTool(.crop)
+            }
+
+            if editor?.hasSubject == true {
+                toolButton(
+                    "Remove Background",
+                    symbol: backgroundRemoved ? "person.crop.rectangle" : "person.crop.rectangle.badge.plus",
+                    active: backgroundRemoved
+                ) {
+                    toggleBackground()
+                }
+            }
+
+            toolButton("Erase", symbol: "eraser", active: activeTool == .erase) {
+                toggleTool(.erase)
+            }
+
+            toolButton("Restore", symbol: "paintbrush.pointed", active: activeTool == .restore) {
+                toggleTool(.restore)
+            }
+        }
+    }
+
+    private func toolButton(
+        _ title: String,
+        symbol: String,
+        active: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.glass)
+        .tint(active ? Color.accentColor : nil)
+        .accessibilityLabel(title)
+        .accessibilityValue(active ? "on" : "off")
+    }
+
+    private var brushRow: some View {
+        HStack(spacing: 12) {
             Slider(value: brushBinding, in: 0.02...0.3) {
                 Text("Brush size")
             }
@@ -134,26 +230,68 @@ struct StickerEditorView: View {
             Button {
                 editor?.undo()
             } label: {
-                Label("Undo", systemImage: "arrow.uturn.backward")
+                Image(systemName: "arrow.uturn.backward")
+                    .frame(minWidth: 44, minHeight: 44)
             }
+            .buttonStyle(.glass)
             .disabled(!(editor?.canUndo ?? false))
+            .accessibilityLabel("Undo")
 
             Button {
                 editor?.reset()
             } label: {
-                Label("Reset", systemImage: "arrow.counterclockwise")
+                Image(systemName: "arrow.counterclockwise")
+                    .frame(minWidth: 44, minHeight: 44)
             }
+            .buttonStyle(.glass)
             .disabled(editor == nil)
-
-            Button {
-                isCropping.toggle()
-            } label: {
-                Label("Crop", systemImage: "crop")
-            }
-            .disabled(editor == nil)
-            .accessibilityLabel(isCropping ? "Crop, on" : "Crop")
-            .accessibilityHint("Turns the crop frame \(isCropping ? "off" : "on")")
+            .accessibilityLabel("Reset mask")
         }
+    }
+
+    private var cropRow: some View {
+        HStack(spacing: 12) {
+            Text("Drag inside to move · corners to resize")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+
+            Button("Reset") { resetCrop() }
+                .buttonStyle(.glass)
+                .disabled(!hasCrop)
+                .accessibilityLabel("Reset crop")
+
+            Button("Apply crop") { activeTool = nil }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Apply crop")
+        }
+    }
+
+    // MARK: - Tool state
+
+    private var hasCrop: Bool {
+        !(cropRect.minX <= 0.001
+            && cropRect.minY <= 0.001
+            && cropRect.width >= 0.999
+            && cropRect.height >= 0.999)
+    }
+
+    private func toggleTool(_ tool: Tool) {
+        activeTool = activeTool == tool ? nil : tool
+    }
+
+    private func toggleBackground() {
+        guard let editor else { return }
+        backgroundRemoved.toggle()
+        editor.setBackgroundRemoved(backgroundRemoved)
+    }
+
+    private func resetCrop() {
+        cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        cropDragging = false
+        cropActiveHandle = nil
     }
 
     private var brushBinding: Binding<CGFloat> {
@@ -185,10 +323,19 @@ struct StickerEditorView: View {
             if let extraction = try? await BackgroundRemover.extractSubject(from: base) {
                 mask = extraction.mask
             }
-            editor = MaskEditor(base: base, mask: mask)
+            let editor = MaskEditor(base: base, mask: mask, maxDimension: 1024)
+            self.editor = editor
+            backgroundRemoved = editor.hasSubject
         } catch {
             loadErrorMessage = error.localizedDescription
         }
+    }
+
+    private func retry() {
+        didLoad = false
+        loadErrorMessage = nil
+        isLoading = true
+        Task { await load() }
     }
 
     // MARK: - Drawing
@@ -196,7 +343,7 @@ struct StickerEditorView: View {
     private func drawGesture(editor: MaskEditor, origin: CGPoint, displaySize: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard !isCropping else { return }
+                guard activeTool == .erase || activeTool == .restore else { return }
                 guard let point = normalizedPoint(
                     value.location,
                     origin: origin,
@@ -206,7 +353,11 @@ struct StickerEditorView: View {
                 if lastPoint == nil {
                     editor.beginStroke()
                 }
-                editor.stroke(from: lastPoint ?? point, to: point, restoring: !isErasing)
+                editor.stroke(
+                    from: lastPoint ?? point,
+                    to: point,
+                    restoring: activeTool == .restore
+                )
                 lastPoint = point
             }
             .onEnded { _ in
@@ -248,11 +399,12 @@ struct StickerEditorView: View {
         ]
 
         return ZStack {
+            // Shaded region outside the crop rect.
             Path { path in
                 path.addRect(CGRect(x: 0, y: 0, width: canvasSize, height: canvasSize))
                 path.addRect(crop)
             }
-            .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
+            .fill(Color.black.opacity(0.5), style: FillStyle(eoFill: true))
             .allowsHitTesting(false)
 
             Rectangle()
@@ -264,8 +416,9 @@ struct StickerEditorView: View {
             ForEach(corners, id: \.self) { corner in
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 18, height: 18)
-                    .overlay(Circle().stroke(Color.black.opacity(0.2), lineWidth: 1))
+                    .frame(width: 30, height: 30)
+                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 3))
+                    .shadow(radius: 2)
                     .position(corner)
                     .allowsHitTesting(false)
             }
@@ -298,7 +451,7 @@ struct StickerEditorView: View {
     }
 
     private func cropHandle(at point: CGPoint, in rect: CGRect) -> CropHandle? {
-        let threshold: CGFloat = 40
+        let threshold: CGFloat = 44
         let candidates: [(CropHandle, CGPoint)] = [
             (.topLeft, CGPoint(x: rect.minX, y: rect.minY)),
             (.topRight, CGPoint(x: rect.maxX, y: rect.minY)),
@@ -356,12 +509,21 @@ struct StickerEditorView: View {
 
     // MARK: - Finish
 
+    private func cancel() {
+        // Exiting crop mode first is the natural escape hatch; otherwise discard.
+        if activeTool == .crop {
+            activeTool = nil
+        } else {
+            dismiss()
+        }
+    }
+
     private func finish() {
         guard let editor else {
             dismiss()
             return
         }
-        let crop = isCropping ? cropRect : nil
+        let crop = hasCrop ? cropRect : nil
         if let image = editor.render(croppedTo: crop) {
             onDone(image)
         }
