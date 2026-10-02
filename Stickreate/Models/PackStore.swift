@@ -25,6 +25,12 @@ final class PackStore {
         return pack
     }
 
+    /// Inserts an imported pack and persists it.
+    func importPack(_ pack: StickerPack) {
+        packs.append(pack)
+        save()
+    }
+
     func pack(with id: UUID) -> StickerPack? {
         packs.first { $0.id == id }
     }
@@ -137,6 +143,19 @@ final class PackStore {
         guard let index = packs.firstIndex(where: { $0.id == packID }) else { return }
         packs[index].name = name
         save()
+    }
+
+    /// Assigns (or clears) a pack's folder. Blank strings clear the folder.
+    func setFolder(_ folder: String?, for packID: UUID) {
+        guard let index = packs.firstIndex(where: { $0.id == packID }) else { return }
+        let trimmed = folder?.trimmingCharacters(in: .whitespacesAndNewlines)
+        packs[index].folder = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        save()
+    }
+
+    /// All distinct, non-empty folders, sorted for display.
+    var folders: [String] {
+        Set(packs.compactMap { $0.folder }).sorted()
     }
 
     func setEmojis(_ emojis: [String], for stickerID: UUID, in packID: UUID) {

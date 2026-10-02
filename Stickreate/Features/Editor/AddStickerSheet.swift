@@ -1,5 +1,7 @@
 import SwiftUI
+import UIKit
 import PhotosUI
+import AVFoundation
 import UniformTypeIdentifiers
 
 /// Sheet for picking photos, videos, or Live Photos and turning them into
@@ -20,6 +22,13 @@ struct AddStickerSheet: View {
     @State private var editing: EditTask?
     @State private var pendingContinuation: CheckedContinuation<Result<StickerItem, Error>?, Never>?
     @State private var pendingResult: Result<StickerItem, Error>?
+
+    @State private var showingCamera = false
+    @State private var capturedImage: UIImage?
+
+    private var isCameraAvailable: Bool {
+        UIImagePickerController.isSourceTypeAvailable(.camera)
+    }
 
     private var pack: StickerPack? { store.pack(with: packID) }
 
@@ -47,6 +56,18 @@ struct AddStickerSheet: View {
         }
         .sheet(item: $editing, onDismiss: editingDismissed) { task in
             editor(for: task)
+        }
+        .fullScreenCover(isPresented: $showingCamera, onDismiss: processCapturedImage) {
+            CameraPicker(
+                onCapture: { image in
+                    capturedImage = image
+                    showingCamera = false
+                },
+                onCancel: {
+                    showingCamera = false
+                }
+            )
+            .ignoresSafeArea()
         }
         .onChange(of: selection) { _, newSelection in
             autoOpenEditorIfNeeded(newSelection)
@@ -95,6 +116,11 @@ struct AddStickerSheet: View {
         } else {
             VStack(spacing: 20) {
                 chooser
+
+                if isCameraAvailable {
+                    cameraButton
+                }
+
                 helper
 
                 if !selection.isEmpty {
@@ -124,6 +150,18 @@ struct AddStickerSheet: View {
         }
         .buttonStyle(.glassProminent)
         .accessibilityLabel("Choose photos or videos")
+    }
+
+    private var cameraButton: some View {
+        Button {
+            requestCamera()
+        } label: {
+            Label("Take Photo", systemImage: "camera")
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+        }
+        .buttonStyle(.glass)
+        .accessibilityLabel("Take a photo")
     }
 
     private var helper: some View {
@@ -174,19 +212,7 @@ struct AddStickerSheet: View {
         for item in selection {
             do {
                 let source = try await StickerSourceStore.importPicked(item)
-                switch source {
-                case .image:
-                    // Stills open the editor; a cancelled editor skips that item.
-                    guard let result = await edit(.still(source)) else { continue }
-                    try apply(result)
-                case .video:
-                    // Videos open the trim screen; a cancelled trim skips that item.
-                    guard let result = await edit(.video(source)) else { continue }
-                    try apply(result)
-                case .gif:
-                    let sticker = try await StickerFactory.makeAnimatedSticker(fromGIFSource: source)
-                    try store.add(sticker, to: packID)
-                }
+                if await process(source: source) == false { return }
             } catch {
                 errorMessage = error.localizedDescription
                 return
@@ -197,12 +223,79 @@ struct AddStickerSheet: View {
         dismiss()
     }
 
+    /// Opens the right editor for a source and adds the result. Returns `false`
+    /// only on a real error (a cancelled editor counts as handled).
+    @MainActor
+    private func process(source: StickerSource) async -> Bool {
+        do {
+            switch source {
+            case .image:
+                // Stills open the editor; a cancelled editor skips that item.
+                guard let result = await edit(.still(source)) else { return true }
+                try apply(result)
+            case .video:
+                // Videos open the trim screen; a cancelled trim skips that item.
+                guard let result = await edit(.video(source)) else { return true }
+                try apply(result)
+            case .gif:
+                let sticker = try await StickerFactory.makeAnimatedSticker(fromGIFSource: source)
+                try store.add(sticker, to: packID)
+            }
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     private func apply(_ result: Result<StickerItem, Error>) throws {
         switch result {
         case .success(let sticker):
             try store.add(sticker, to: packID)
         case .failure(let error):
             throw error
+        }
+    }
+
+    // MARK: - Camera
+
+    private func requestCamera() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            showingCamera = true
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                Task { @MainActor in
+                    if granted {
+                        showingCamera = true
+                    } else {
+                        errorMessage = "Camera access is off. Turn it on in Settings to take a photo."
+                    }
+                }
+            }
+        default:
+            errorMessage = "Camera access is off. Turn it on in Settings to take a photo."
+        }
+    }
+
+    @MainActor
+    private func processCapturedImage() {
+        guard let image = capturedImage else { return }
+        capturedImage = nil
+
+        Task {
+            isProcessing = true
+            defer { isProcessing = false }
+
+            do {
+                let upright = image.upNormalized() ?? image
+                let source = try StickerSourceStore.saveImage(upright, id: UUID())
+                if await process(source: source) {
+                    dismiss()
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

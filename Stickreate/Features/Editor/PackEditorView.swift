@@ -20,6 +20,14 @@ struct PackEditorView: View {
     @State private var emojiTarget: StickerItem?
     @State private var editError: String?
 
+    @State private var showingFolder = false
+    @State private var shareItem: ShareItem?
+
+    private struct ShareItem: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+
     /// One alert channel so rename and error can never fight over presentation.
     private enum ActiveAlert {
         case rename
@@ -76,6 +84,19 @@ struct PackEditorView: View {
             .sheet(item: $emojiTarget) { item in
                 EmojiPickerSheet(initialEmojis: item.emojis) { emojis in
                     store.setEmojis(emojis, for: item.id, in: packID)
+                }
+            }
+            .sheet(isPresented: $showingFolder) {
+                FolderPickerSheet(
+                    currentFolder: pack?.folder,
+                    folders: store.folders
+                ) { folder in
+                    store.setFolder(folder, for: packID)
+                }
+            }
+            .sheet(item: $shareItem) { item in
+                ActivityView(url: item.url) {
+                    shareItem = nil
                 }
             }
             .alert(alertTitle, isPresented: alertIsPresented) {
@@ -172,6 +193,11 @@ struct PackEditorView: View {
 
             if pack.isMixed {
                 Text("\(pack.staticStickers.count) static · \(pack.animatedStickers.count) animated")
+                    .font(.caption)
+            }
+
+            if let folder = pack.folder {
+                Label(folder, systemImage: "folder")
                     .font(.caption)
             }
         }
@@ -297,7 +323,13 @@ struct PackEditorView: View {
                     draftName = pack?.name ?? ""
                     activeAlert = .rename
                 }
-                Button("Export…", systemImage: "square.and.arrow.up") {
+                Button("Folder…", systemImage: "folder") {
+                    showingFolder = true
+                }
+                Button("Share Pack…", systemImage: "square.and.arrow.up") {
+                    sharePack()
+                }
+                Button("Export…", systemImage: "plus.message") {
                     showingExport = true
                 }
                 .disabled(!canExport)
@@ -404,6 +436,16 @@ struct PackEditorView: View {
     private func deletePack() {
         store.removePack(packID)
         dismiss()
+    }
+
+    private func sharePack() {
+        guard let pack else { return }
+        do {
+            let url = try PackArchive.writeTemporaryFile(pack)
+            shareItem = ShareItem(url: url)
+        } catch {
+            activeAlert = .error(error.localizedDescription)
+        }
     }
 }
 

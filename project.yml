@@ -46,6 +46,7 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: Take a photo to turn it into a sticker.
         LSApplicationQueriesSchemes:
           - whatsapp
         UIApplicationSceneManifest:

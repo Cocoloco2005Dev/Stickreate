@@ -5,17 +5,21 @@ struct StickerPack: Identifiable, Hashable, Codable, Sendable {
     var name: String
     var publisher: String
     var stickers: [StickerItem]
+    /// Optional user folder/group; `nil` for packs saved before folders existed.
+    var folder: String?
 
     init(
         id: UUID = UUID(),
         name: String,
         publisher: String = "Stickreate",
-        stickers: [StickerItem] = []
+        stickers: [StickerItem] = [],
+        folder: String? = nil
     ) {
         self.id = id
         self.name = name
         self.publisher = publisher
         self.stickers = stickers
+        self.folder = folder
     }
 
     /// The pack's kind is fixed by its first sticker.
