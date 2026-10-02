@@ -29,13 +29,13 @@ enum StickerFactory {
 
         if types.contains(where: { $0.conforms(to: .movie) }) {
             let url = try await movieURL(from: item)
-            let frames = try await FrameExtractor.frames(fromVideoAt: url, maxFrames: 12)
+            let frames = try await FrameExtractor.frames(fromVideoAt: url, maxFrames: 30)
             return try await makeAnimated(from: frames)
         }
 
         if types.contains(where: { $0.conforms(to: .gif) }) {
             let data = try await imageData(from: item)
-            let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 12)
+            let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
             return try await makeAnimated(from: frames)
         }
 
@@ -56,12 +56,22 @@ enum StickerFactory {
         // Background removal is best-effort: any failure falls back to the
         // original image so sticker creation never blocks.
         let subject = (try? await BackgroundRemover.removeBackground(from: image)) ?? image
+        return try encodeStatic(subject)
+    }
 
-        guard let stickerData = StickerEncoder.staticSticker(from: subject),
-              let previewData = StickerEncoder.previewPNG(from: subject, size: 512) else {
+    /// Loads a picked image as an upright `UIImage` without touching the pixels.
+    static func loadUprightImage(from item: PhotosPickerItem) async throws -> UIImage {
+        let data = try await imageData(from: item)
+        guard let image = UIImage(data: data) else { throw Failure.empty }
+        return image.upNormalized() ?? image
+    }
+
+    /// Encodes an already-prepared image into a static sticker (no background removal).
+    static func encodeStatic(_ image: UIImage) throws -> StickerItem {
+        guard let stickerData = StickerEncoder.staticSticker(from: image),
+              let previewData = StickerEncoder.previewPNG(from: image, size: 512) else {
             throw Failure.failed("Couldn't encode this sticker.")
         }
-
         return StickerItem(kind: .static, emojis: [], stickerData: stickerData, previewData: previewData)
     }
 

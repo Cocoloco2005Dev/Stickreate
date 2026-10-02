@@ -22,7 +22,7 @@ enum FrameExtractor {
     ///
     /// Only the first 10 s are sampled (WhatsApp's animation ceiling), and frame
     /// duration is the sampled span divided by the number of frames.
-    static func frames(fromVideoAt url: URL, maxFrames: Int = 24) async throws -> [Frame] {
+    static func frames(fromVideoAt url: URL, maxFrames: Int = 30) async throws -> [Frame] {
         let asset = AVURLAsset(url: url)
         let duration: CMTime
         do {
@@ -56,7 +56,7 @@ enum FrameExtractor {
     }
 
     /// Extracts frames (with their delays) from GIF data.
-    static func frames(fromGIF data: Data, maxFrames: Int = 24) throws -> [Frame] {
+    static func frames(fromGIF data: Data, maxFrames: Int = 30) throws -> [Frame] {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             throw Failure.failed("Couldn't read this GIF.")
         }

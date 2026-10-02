@@ -109,10 +109,9 @@ struct ExportSheet: View {
                 }
                 .buttonStyle(.glassProminent)
                 .tint(.green)
-                .disabled(!isWhatsAppInstalled)
 
                 if !isWhatsAppInstalled {
-                    Text("WhatsApp isn't installed. Install it, then come back to add this pack.")
+                    Text("If WhatsApp doesn't open, open it once and try again.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

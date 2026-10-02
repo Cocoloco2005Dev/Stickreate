@@ -1,7 +1,9 @@
 import SwiftUI
 
 /// Editor for one pack. Reads the pack from the store on every render so it can
-/// never go stale, and keeps exactly one prominent control: the bottom "Add Sticker".
+/// never go stale. The toolbar "Add Sticker" is a plain toolbar button (the
+/// system renders toolbar glass); the empty state's "Add Sticker" is the single
+/// prominent action on this screen.
 struct PackEditorView: View {
     let store: PackStore
     let packID: UUID
@@ -10,10 +12,15 @@ struct PackEditorView: View {
 
     @State private var showingAdd = false
     @State private var showingExport = false
-    @State private var showingRename = false
     @State private var showingDelete = false
+    @State private var activeAlert: ActiveAlert?
     @State private var draftName = ""
-    @State private var errorMessage: String?
+
+    /// One alert channel so rename and error can never fight over presentation.
+    private enum ActiveAlert {
+        case rename
+        case error(String)
+    }
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
 
@@ -37,12 +44,10 @@ struct PackEditorView: View {
                     ExportSheet(pack: pack)
                 }
             }
-            .alert("Rename Pack", isPresented: $showingRename) {
-                TextField("Pack name", text: $draftName)
-                Button("Save") { saveName() }
-                Button("Cancel", role: .cancel) {}
+            .alert(alertTitle, isPresented: alertIsPresented) {
+                alertActions
             } message: {
-                Text("Give this pack a name.")
+                alertMessage
             }
             .confirmationDialog(
                 "Delete this pack?",
@@ -54,17 +59,46 @@ struct PackEditorView: View {
             } message: {
                 Text("This removes the pack and all its stickers. You can't undo this.")
             }
-            .alert(
-                "Something went wrong",
-                isPresented: Binding(
-                    get: { errorMessage != nil },
-                    set: { if !$0 { errorMessage = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) { errorMessage = nil }
-            } message: {
-                Text(errorMessage ?? "")
-            }
+    }
+
+    // MARK: - Single alert channel
+
+    private var alertIsPresented: Binding<Bool> {
+        Binding(
+            get: { activeAlert != nil },
+            set: { if !$0 { activeAlert = nil } }
+        )
+    }
+
+    private var alertTitle: String {
+        switch activeAlert {
+        case .rename: "Rename Pack"
+        case .error: "Something went wrong"
+        case nil: ""
+        }
+    }
+
+    @ViewBuilder
+    private var alertActions: some View {
+        switch activeAlert {
+        case .rename:
+            TextField("Pack name", text: $draftName)
+            Button("Save") { saveName() }
+            Button("Cancel", role: .cancel) {}
+        case .error:
+            Button("OK", role: .cancel) {}
+        case nil:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var alertMessage: some View {
+        switch activeAlert {
+        case .rename: Text("Give this pack a name.")
+        case .error(let message): Text(message)
+        case nil: EmptyView()
+        }
     }
 
     @ViewBuilder
@@ -90,7 +124,7 @@ struct PackEditorView: View {
             Button("Add Sticker", systemImage: "plus") {
                 showingAdd = true
             }
-            .buttonStyle(.glass)
+            .buttonStyle(.glassProminent)
         }
     }
 
@@ -136,7 +170,6 @@ struct PackEditorView: View {
             } label: {
                 Label("Add Sticker", systemImage: "plus")
             }
-            .buttonStyle(.glassProminent)
             .disabled(pack == nil || (pack?.stickers.count ?? 0) >= Limits.maxStickers)
             .accessibilityLabel("Add sticker")
         }
@@ -145,7 +178,7 @@ struct PackEditorView: View {
             Menu {
                 Button("Rename…", systemImage: "pencil") {
                     draftName = pack?.name ?? ""
-                    showingRename = true
+                    activeAlert = .rename
                 }
                 Button("Export…", systemImage: "square.and.arrow.up") {
                     showingExport = true

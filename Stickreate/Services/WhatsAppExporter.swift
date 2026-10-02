@@ -69,8 +69,10 @@ enum WhatsAppExporter {
             throw Failure.invalid("Couldn't build the pack data.")
         }
 
-        guard isWhatsAppInstalled else { throw Failure.notInstalled }
-
+        // Deliberately NOT gated on `canOpenURL("whatsapp://")`: inside
+        // LiveContainer that query returns false even though opening the scheme
+        // passes through to the real installed WhatsApp. Attempting the open is
+        // the source of truth; if WhatsApp is missing, nothing happens.
         let pasteboardItem: [String: Any] = [pasteboardType: data]
         UIPasteboard.general.setItems(
             [pasteboardItem],
