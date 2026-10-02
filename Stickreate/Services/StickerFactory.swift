@@ -29,13 +29,13 @@ enum StickerFactory {
 
         if types.contains(where: { $0.conforms(to: .movie) }) {
             let url = try await movieURL(from: item)
-            let frames = try await FrameExtractor.frames(fromVideoAt: url)
+            let frames = try await FrameExtractor.frames(fromVideoAt: url, maxFrames: 12)
             return try await makeAnimated(from: frames)
         }
 
         if types.contains(where: { $0.conforms(to: .gif) }) {
             let data = try await imageData(from: item)
-            let frames = try FrameExtractor.frames(fromGIF: data)
+            let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 12)
             return try await makeAnimated(from: frames)
         }
 
