@@ -3,17 +3,29 @@ import Foundation
 struct StickerPack: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     var name: String
+    var publisher: String
     var stickers: [StickerItem]
 
-    init(id: UUID = UUID(), name: String, stickers: [StickerItem] = []) {
+    init(
+        id: UUID = UUID(),
+        name: String,
+        publisher: String = "Stickreate",
+        stickers: [StickerItem] = []
+    ) {
         self.id = id
         self.name = name
+        self.publisher = publisher
         self.stickers = stickers
     }
 
     /// The pack's kind is fixed by its first sticker.
     var kind: StickerKind? {
         stickers.first?.kind
+    }
+
+    /// The sticker shown in WhatsApp's tray picker.
+    var traySourcePreview: Data? {
+        stickers.first?.previewData
     }
 
     enum ValidationError: LocalizedError, Equatable {

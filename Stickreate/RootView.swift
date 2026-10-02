@@ -13,9 +13,7 @@ struct RootView: View {
     var body: some View {
         TabView(selection: $selection) {
             Tab("Packs", systemImage: "square.grid.2x2", value: Section.packs) {
-                NavigationStack {
-                    LibraryView()
-                }
+                LibraryView()
             }
 
             Tab("Settings", systemImage: "gearshape", value: Section.settings) {
