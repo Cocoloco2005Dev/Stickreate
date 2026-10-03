@@ -6,9 +6,10 @@ import UIKit
 /// Checkerboard canvas with pinch-to-zoom / drag-to-pan above a control layer:
 /// a contextual row, a 2×N tool grid, and the Cancel · undo/redo · Apply bar.
 /// Everything is non-destructive through `MaskEditor`. Background removal is
-/// `Intelligent Cut`, which lifts subjects on-device with Apple Vision; in that
-/// mode the user presses and holds a subject to lift only it, Photos-style.
-/// Nothing is removed until the user asks for it.
+/// `Intelligent Cut`: it opens the VisionKit subject-lift step
+/// (`SubjectLiftView`), where press-and-hold behaves exactly like Photos, and
+/// seeds the editable mask from the lifted cut-out so the manual tools refine
+/// it. Nothing is removed until the user asks for it.
 @MainActor
 struct StickerEditorView: View {
     let source: StickerSource
@@ -34,7 +35,6 @@ struct StickerEditorView: View {
     @State private var pan: CGSize = .zero
     @State private var panStart: CGSize = .zero
     @State private var panning = false
-    @State private var didPan = false
     @State private var magnifying = false
     @State private var showZoomHint = true
     @State private var didSetInitialZoom = false
@@ -54,19 +54,11 @@ struct StickerEditorView: View {
     @State private var cropDragging = false
     @State private var cropActiveHandle: CropHandle?
 
-    // Intelligent Cut instances
-    @State private var isRemoving = false
-    @State private var removalProgress = 0.0
-    @State private var hasInstances = false
-    /// Every instance Vision found; used to restore the full cut.
-    @State private var allInstanceIDs: Set<Int> = []
-    /// The single subject the user lifted with a long press (`nil` = whole image).
-    @State private var liftedInstanceID: Int?
-    @State private var didShowLiftHint = false
-    @State private var pressPoint: CGPoint = .zero
-    @State private var liftPop = false
-    @State private var popTask: Task<Void, Never>?
-    @State private var liftTask: Task<Void, Never>?
+    // Intelligent Cut / VisionKit subject lift
+    /// Presents the full-screen press-and-hold subject-lift step.
+    @State private var showSubjectLift = false
+    /// True once a lifted cut-out has been seeded into the editable mask.
+    @State private var hasLiftedSubject = false
     @State private var instanceFeedback: String?
     @State private var feedbackTask: Task<Void, Never>?
 
@@ -86,9 +78,6 @@ struct StickerEditorView: View {
 
     /// Apply is available once the user has changed the mask or framed a crop.
     private var hasEdits: Bool { hasCommittedChange || hasCrop }
-
-    /// True when a single subject has been lifted and isolated on transparency.
-    private var isLifted: Bool { hasInstances && liftedInstanceID != nil }
 
     // MARK: - Body
 
@@ -121,9 +110,7 @@ struct StickerEditorView: View {
                 }
             }
             .overlay {
-                if isRemoving {
-                    busyOverlay(title: removalText, subtitle: "On-device Apple Vision")
-                } else if isSaving {
+                if isSaving {
                     busyOverlay(title: applyProgressText, subtitle: nil)
                 }
             }
@@ -134,6 +121,7 @@ struct StickerEditorView: View {
             }
         }
         .task { await load() }
+        .fullScreenCover(isPresented: $showSubjectLift) { subjectLiftCover }
     }
 
     // MARK: - Canvas
@@ -155,24 +143,21 @@ struct StickerEditorView: View {
                     .resizable()
                     .interpolation(.high)
                     .frame(width: max(frame.width, 1), height: max(frame.height, 1))
-                    .scaleEffect(liftPop ? 1.035 : 1)
                     .shadow(
-                        color: .black.opacity(isLifted ? 0.35 : 0),
-                        radius: isLifted ? 14 : 0,
-                        y: isLifted ? 8 : 0
+                        color: .black.opacity(hasLiftedSubject ? 0.35 : 0),
+                        radius: hasLiftedSubject ? 14 : 0,
+                        y: hasLiftedSubject ? 8 : 0
                     )
-                    .animation(.easeInOut(duration: 0.2), value: isLifted)
+                    .animation(.easeInOut(duration: 0.2), value: hasLiftedSubject)
                     .position(x: frame.midX, y: frame.midY)
 
                 canvasOverlay(frame: frame)
 
                 if let instanceFeedback {
                     infoPill(instanceFeedback)
-                } else if activeTool == .aiCut && hasInstances {
-                    infoPill(isLifted ? subjectCountText : "Press and hold a subject to lift it")
                 }
 
-                if showZoomHint && !isRemoving && !isSaving {
+                if showZoomHint && !isSaving {
                     zoomHint
                 }
             }
@@ -311,7 +296,6 @@ struct StickerEditorView: View {
             .onChanged { value in
                 if showZoomHint { showZoomHint = false }
                 guard !magnifying else { return }
-                pressPoint = value.startLocation
 
                 switch activeTool {
                 case .brush, .erase:
@@ -322,16 +306,8 @@ struct StickerEditorView: View {
                     updateLasso(value: value, frame: frame)
                 case .crop:
                     updateCrop(value: value, frame: frame)
-                case .original:
+                case .original, .aiCut:
                     panCanvas(value: value, canvas: canvas, imageSize: editor.base.size)
-                case .aiCut:
-                    updateIntelligentCut(
-                        value: value,
-                        frame: frame,
-                        canvas: canvas,
-                        imageSize: editor.base.size,
-                        editor: editor
-                    )
                 }
             }
             .onEnded { _ in
@@ -350,9 +326,7 @@ struct StickerEditorView: View {
                     commitLasso(editor: editor)
                 case .crop:
                     finishCrop()
-                case .aiCut:
-                    endIntelligentCutGesture()
-                case .original:
+                case .original, .aiCut:
                     panning = false
                     panStart = pan
                 }
@@ -363,7 +337,6 @@ struct StickerEditorView: View {
         MagnificationGesture()
             .onChanged { value in
                 if showZoomHint { showZoomHint = false }
-                liftTask?.cancel()
                 if !magnifying {
                     magnifying = true
                     zoomStart = zoom
@@ -442,110 +415,40 @@ struct StickerEditorView: View {
         hasCommittedChange = true
     }
 
-    // MARK: - Intelligent Cut subject lift
+    // MARK: - VisionKit subject lift
 
-    private func liftSubject(at point: CGPoint, editor: MaskEditor, frame: CGRect) {
-        let normalized = StickerGeometry.normalized(point, in: frame)
-        guard let id = editor.instanceID(at: normalized) else {
-            restoreWholeImage(editor: editor)
+    /// Full-screen VisionKit step. Press-and-hold lifts a subject exactly like
+    /// Photos; on confirm we seed a fresh editable mask from the cut-out.
+    @ViewBuilder
+    private var subjectLiftCover: some View {
+        if let editor {
+            SubjectLiftView(image: editor.base) { cutout in
+                applyLiftedSubject(cutout)
+            }
+        }
+    }
+
+    /// Seeds the editable mask from the lifted cut-out's alpha so Restore,
+    /// Erase, Rectangle, Lasso and Crop still refine the result.
+    private func applyLiftedSubject(_ cutout: UIImage) {
+        guard let editor else { return }
+        guard let mask = SubjectCutoutMask.mask(fromAlphaOf: cutout) else {
+            alertMessage = "Couldn't read the lifted subject."
             return
         }
-        liftedInstanceID = id
-        editor.setInstances([id])
+        let radius = editor.brushRadius
+        let updated = MaskEditor(base: editor.base, mask: mask, maxDimension: 1024)
+        updated.brushRadius = radius
+        self.editor = updated
+        activeTool = .aiCut
+        hasLiftedSubject = true
         hasCommittedChange = true
-        popSubject()
         haptic()
-        flash("Subject lifted · press and hold another, or Original to reset.", duration: 2.0)
-    }
-
-    private func restoreWholeImage(editor: MaskEditor) {
-        liftedInstanceID = nil
-        if !editor.selectedInstanceIDs.isEmpty {
-            editor.setInstances([])
-            hasCommittedChange = true
-        }
-        flash("Whole image restored")
-    }
-
-    /// Short scale pop so the lifted subject reads as “picked up”.
-    private func popSubject() {
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.5)) { liftPop = true }
-        popTask?.cancel()
-        popTask = Task {
-            try? await Task.sleep(for: .seconds(0.16))
-            if Task.isCancelled { return }
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { liftPop = false }
-        }
+        flash("Subject lifted · refine with the manual tools.", duration: 2.0)
     }
 
     private func haptic() {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-    }
-
-    /// Photos-style: while the finger stays put for a moment, lift the subject
-    /// under it. Moving cancels the lift and pans instead, so a press-and-hold
-    /// and a drag never fight each other.
-    private func updateIntelligentCut(
-        value: DragGesture.Value,
-        frame: CGRect,
-        canvas: CGSize,
-        imageSize: CGSize,
-        editor: MaskEditor
-    ) {
-        if !panning {
-            panning = true
-            didPan = false
-            panStart = pan
-            scheduleLift(editor: editor, frame: frame)
-        }
-
-        let moved = (value.translation.width * value.translation.width
-            + value.translation.height * value.translation.height).squareRoot()
-        if moved >= 12 {
-            didPan = true
-            liftTask?.cancel()
-        }
-        guard didPan else { return }
-
-        let candidate = CGSize(
-            width: panStart.width + value.translation.width,
-            height: panStart.height + value.translation.height
-        )
-        pan = StickerGeometry.clampedPan(candidate, canvas: canvas, imageSize: imageSize, zoom: zoom)
-    }
-
-    /// Fires the lift if the press stays still. Cancelled by movement, a second
-    /// finger (zoom) or lifting the finger.
-    private func scheduleLift(editor: MaskEditor, frame: CGRect) {
-        liftTask?.cancel()
-        liftTask = Task {
-            try? await Task.sleep(for: .seconds(0.35))
-            if Task.isCancelled { return }
-            guard activeTool == .aiCut, hasInstances, !magnifying, !didPan else { return }
-            liftSubject(at: pressPoint, editor: editor, frame: frame)
-        }
-    }
-
-    /// Tapping in Intelligent Cut does nothing; only a press-and-hold lifts.
-    /// This clears the press/pan bookkeeping when the touch ends.
-    private func endIntelligentCutGesture() {
-        liftTask?.cancel()
-        panning = false
-        didPan = false
-        panStart = pan
-    }
-
-    private func showLiftHintIfNeeded() {
-        guard hasInstances, !didShowLiftHint else { return }
-        didShowLiftHint = true
-        flash("Press and hold a subject to lift it", duration: 2.5)
-    }
-
-    private var subjectCountText: String {
-        guard let editor else { return "" }
-        let count = editor.selectedInstanceIDs.count
-        if count == 0 { return "Whole image" }
-        return count == 1 ? "1 subject selected" : "\(count) subjects selected"
     }
 
     private func flash(_ text: String, duration: TimeInterval = 1.2) {
@@ -790,29 +693,24 @@ struct StickerEditorView: View {
 
         case .aiCut:
             VStack(spacing: 8) {
-                if hasInstances {
-                    Text(liftedInstanceID == nil
-                         ? "Press and hold a subject to lift it."
-                         : "Subject selected · press and hold another, or Original to reset.")
+                if hasLiftedSubject {
+                    Text("Subject lifted. Refine with Restore, Erase, Rectangle, Lasso or Crop.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                    Text(subjectCountText)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.primary)
-                } else if editor?.hasSubject == true {
-                    Text("No separate subjects found. Refine with the manual tools.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Button("Use Restore") { select(.brush) }
+                    Button("Lift Another Subject") { showSubjectLift = true }
                         .buttonStyle(.glass)
                         .frame(minHeight: 44)
-                        .accessibilityLabel("Use the restore tool")
+                        .accessibilityLabel("Open the subject lift step again")
                 } else {
-                    Text("Intelligent Cut finds subjects on-device with Apple Vision.")
+                    Text("Intelligent Cut lifts subjects on-device with VisionKit.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Lift Subject") { showSubjectLift = true }
+                        .buttonStyle(.glass)
+                        .frame(minHeight: 44)
+                        .accessibilityLabel("Open the subject lift step")
                 }
             }
 
@@ -963,7 +861,7 @@ struct StickerEditorView: View {
 
             Button("Apply") { apply() }
                 .buttonStyle(.glassProminent)
-                .disabled(!hasEdits || isRemoving || isSaving)
+                .disabled(!hasEdits || isSaving)
                 .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
                 .accessibilityLabel("Apply changes")
         }
@@ -987,7 +885,10 @@ struct StickerEditorView: View {
     private func select(_ tool: Tool) {
         switch tool {
         case .aiCut:
-            runIntelligentCut()
+            // Intelligent Cut is an action, not a paint mode: open the
+            // VisionKit subject-lift step. Cancel leaves the editor untouched.
+            guard !isSaving else { return }
+            showSubjectLift = true
 
         case .original:
             activeTool = .original
@@ -995,8 +896,7 @@ struct StickerEditorView: View {
                 // setInstances([]) restores the whole image for both instance and
                 // manual editors, and is an undoable step.
                 editor.setInstances([])
-                liftedInstanceID = nil
-                liftPop = false
+                hasLiftedSubject = false
                 hasCommittedChange = false
                 flash("Whole image restored")
             }
@@ -1008,85 +908,6 @@ struct StickerEditorView: View {
             selectionRect = nil
             lassoPoints = []
         }
-    }
-
-    // MARK: - Intelligent Cut
-
-    private func runIntelligentCut() {
-        guard let editor, !isRemoving, !isSaving else { return }
-        activeTool = .aiCut
-
-        if hasInstances {
-            // Restore the current selection — the lifted subject, or the full
-            // cut — without another Vision pass.
-            let target = liftedInstanceID.map { Set([$0]) } ?? allInstanceIDs
-            if editor.selectedInstanceIDs != target {
-                editor.setInstances(target)
-                hasCommittedChange = true
-            }
-            showLiftHintIfNeeded()
-            return
-        }
-
-        // A mask-only cut (no per-instance data) can be re-applied cheaply.
-        if editor.hasSubject {
-            editor.setBackgroundRemoved(true)
-            hasCommittedChange = true
-            return
-        }
-
-        isRemoving = true
-        removalProgress = 0
-
-        let base = editor.base
-        let radius = editor.brushRadius
-
-        Task {
-            do {
-                let extraction = try await BackgroundRemover.extractSubject(from: base) { value in
-                    Task { @MainActor in
-                        removalProgress = min(max(value, 0), 1)
-                    }
-                }
-
-                if extraction.instances.isEmpty {
-                    // No separable subjects: keep the combined cut so the user
-                    // still gets a result, and steer them to the manual tools.
-                    let fallback = MaskEditor(base: base, mask: extraction.mask, maxDimension: 1024)
-                    fallback.brushRadius = radius
-                    self.editor = fallback
-                    self.hasInstances = false
-                    self.allInstanceIDs = []
-                    self.liftedInstanceID = nil
-                } else {
-                    let updated = MaskEditor(
-                        base: base,
-                        instances: extraction.instances,
-                        maxDimension: 1024
-                    )
-                    updated.brushRadius = radius
-                    self.editor = updated
-                    self.hasInstances = true
-                    self.allInstanceIDs = updated.selectedInstanceIDs
-                    self.liftedInstanceID = nil
-                }
-                self.hasCommittedChange = true
-                self.isRemoving = false
-                self.showLiftHintIfNeeded()
-            } catch {
-                self.isRemoving = false
-                self.activeTool = .original
-                self.alertMessage = (error as? LocalizedError)?.errorDescription
-                    ?? "Couldn't remove the background."
-            }
-        }
-    }
-
-    private var removalText: String {
-        if removalProgress > 0 {
-            return "Intelligent Cut… \(Int((removalProgress * 100).rounded()))%"
-        }
-        return "Intelligent Cut…"
     }
 
     // MARK: - Busy overlay
@@ -1150,11 +971,13 @@ struct StickerEditorView: View {
         }
         let base = loaded.upNormalized() ?? loaded
 
-        // No automatic cut-out: start on Original with everything kept. Vision
+        // No automatic cut-out: start on Original with everything kept. VisionKit
         // only runs when the user taps Intelligent Cut.
         let editor = MaskEditor(base: base, mask: nil, maxDimension: 1024)
         self.editor = editor
         activeTool = .original
+        hasLiftedSubject = false
+        hasCommittedChange = false
     }
 
     private func retry() {
