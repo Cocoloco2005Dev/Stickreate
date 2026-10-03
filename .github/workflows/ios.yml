@@ -56,6 +56,15 @@ jobs:
             -scheme Stickreate \
             -configuration Release
 
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project Stickreate.xcodeproj \
+            -scheme Stickreate \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            CODE_SIGNING_ALLOWED=NO
+
       - name: Resolve version
         run: |
           set -euo pipefail

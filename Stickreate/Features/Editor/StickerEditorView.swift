@@ -130,7 +130,12 @@ struct StickerEditorView: View {
     private func canvas(_ editor: MaskEditor) -> some View {
         GeometryReader { proxy in
             let size = proxy.size
-            let frame = imageFrame(canvas: size, imageSize: editor.base.size)
+            let frame = StickerGeometry.imageFrame(
+                canvas: size,
+                imageSize: editor.base.size,
+                zoom: zoom,
+                pan: pan
+            )
 
             ZStack {
                 CheckerboardView()
@@ -245,7 +250,7 @@ struct StickerEditorView: View {
 
     private func lassoPath(frame: CGRect) -> Path {
         var path = Path()
-        let points = lassoPoints.map { canvasPoint($0, in: frame) }
+        let points = lassoPoints.map { StickerGeometry.canvasPoint($0, in: frame) }
         guard let first = points.first else { return path }
         path.move(to: first)
         for point in points.dropFirst() { path.addLine(to: point) }
@@ -307,18 +312,18 @@ struct StickerEditorView: View {
                     panStart = pan
                 }
                 zoom = min(max(zoomStart * value, 1), maxZoom)
-                pan = clampedPan(pan, canvas: canvas, imageSize: imageSize)
+                pan = StickerGeometry.clampedPan(pan, canvas: canvas, imageSize: imageSize, zoom: zoom)
             }
             .onEnded { _ in
                 magnifying = false
                 zoomStart = zoom
                 panStart = pan
-                pan = clampedPan(pan, canvas: canvas, imageSize: imageSize)
+                pan = StickerGeometry.clampedPan(pan, canvas: canvas, imageSize: imageSize, zoom: zoom)
             }
     }
 
     private func draw(editor: MaskEditor, value: DragGesture.Value, frame: CGRect) {
-        let point = normalized(value.location, in: frame)
+        let point = StickerGeometry.normalized(value.location, in: frame)
         if lastPoint == nil { editor.beginStroke() }
         editor.stroke(
             from: lastPoint ?? point,
@@ -337,13 +342,13 @@ struct StickerEditorView: View {
             width: panStart.width + value.translation.width,
             height: panStart.height + value.translation.height
         )
-        pan = clampedPan(candidate, canvas: canvas, imageSize: imageSize)
+        pan = StickerGeometry.clampedPan(candidate, canvas: canvas, imageSize: imageSize, zoom: zoom)
     }
 
     private func updateRectSelection(value: DragGesture.Value, frame: CGRect) {
-        let start = selectionStart ?? normalized(value.startLocation, in: frame)
+        let start = selectionStart ?? StickerGeometry.normalized(value.startLocation, in: frame)
         selectionStart = start
-        let current = normalized(value.location, in: frame)
+        let current = StickerGeometry.normalized(value.location, in: frame)
         selectionRect = CGRect(
             x: min(start.x, current.x),
             y: min(start.y, current.y),
@@ -363,7 +368,7 @@ struct StickerEditorView: View {
     }
 
     private func updateLasso(value: DragGesture.Value, frame: CGRect) {
-        let point = normalized(value.location, in: frame)
+        let point = StickerGeometry.normalized(value.location, in: frame)
         if let last = lassoPoints.last {
             let dx = point.x - last.x
             let dy = point.y - last.y
@@ -390,8 +395,8 @@ struct StickerEditorView: View {
 
         let handle = cropActiveHandle ?? .new
         if handle == .new {
-            let start = normalized(value.startLocation, in: frame)
-            let current = normalized(value.location, in: frame)
+            let start = StickerGeometry.normalized(value.startLocation, in: frame)
+            let current = StickerGeometry.normalized(value.location, in: frame)
             cropRect = CGRect(
                 x: min(start.x, current.x),
                 y: min(start.y, current.y),
@@ -485,29 +490,6 @@ struct StickerEditorView: View {
 
     // MARK: - Geometry mapping
 
-    private func imageFrame(canvas: CGSize, imageSize: CGSize) -> CGRect {
-        guard imageSize.width > 0, imageSize.height > 0,
-              canvas.width > 0, canvas.height > 0 else { return .zero }
-        let fit = min(canvas.width / imageSize.width, canvas.height / imageSize.height)
-        let width = imageSize.width * fit * zoom
-        let height = imageSize.height * fit * zoom
-        let centerX = canvas.width / 2 + pan.width
-        let centerY = canvas.height / 2 + pan.height
-        return CGRect(x: centerX - width / 2, y: centerY - height / 2, width: width, height: height)
-    }
-
-    private func clampedPan(_ value: CGSize, canvas: CGSize, imageSize: CGSize) -> CGSize {
-        guard imageSize.width > 0, imageSize.height > 0,
-              canvas.width > 0, canvas.height > 0 else { return value }
-        let fit = min(canvas.width / imageSize.width, canvas.height / imageSize.height)
-        let maxX = max(0, (imageSize.width * fit * zoom - canvas.width) / 2)
-        let maxY = max(0, (imageSize.height * fit * zoom - canvas.height) / 2)
-        return CGSize(
-            width: min(max(value.width, -maxX), maxX),
-            height: min(max(value.height, -maxY), maxY)
-        )
-    }
-
     private func cropFrame(frame: CGRect) -> CGRect {
         CGRect(
             x: frame.minX + cropRect.minX * frame.width,
@@ -533,18 +515,6 @@ struct StickerEditorView: View {
             CGPoint(x: crop.minX, y: crop.maxY),
             CGPoint(x: crop.maxX, y: crop.maxY)
         ]
-    }
-
-    /// Touch → normalized 0...1 image coordinates, clamped to the image edges.
-    private func normalized(_ location: CGPoint, in frame: CGRect) -> CGPoint {
-        guard frame.width > 0, frame.height > 0 else { return .zero }
-        let x = (location.x - frame.minX) / frame.width
-        let y = (location.y - frame.minY) / frame.height
-        return CGPoint(x: min(max(x, 0), 1), y: min(max(y, 0), 1))
-    }
-
-    private func canvasPoint(_ point: CGPoint, in frame: CGRect) -> CGPoint {
-        CGPoint(x: frame.minX + point.x * frame.width, y: frame.minY + point.y * frame.height)
     }
 
     // MARK: - Control layer

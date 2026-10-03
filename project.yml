@@ -56,5 +56,19 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
     scheme:
-      testTargets: []
+      testTargets:
+        - StickreateTests
       gatherCoverageData: false
+
+  StickreateTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: StickreateTests
+    dependencies:
+      - target: Stickreate
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cocol.stickreate.tests
+        GENERATE_INFOPLIST_FILE: YES
