@@ -25,8 +25,12 @@ enum StickerFactory {
     /// Turns a picked photo, video, or GIF into a ready-to-use sticker.
     ///
     /// Video and GIF stickers also persist their original media so they can be
-    /// re-opened in the editor.
-    static func makeSticker(from item: PhotosPickerItem) async throws -> StickerItem {
+    /// re-opened in the editor. `onStage` reports real creation phases.
+    static func makeSticker(
+        from item: PhotosPickerItem,
+        onStage: ((StickerCreationStage) -> Void)? = nil
+    ) async throws -> StickerItem {
+        onStage?(.loading)
         let types = item.supportedContentTypes
 
         if types.contains(where: { $0.conforms(to: .movie) }) {
@@ -34,9 +38,15 @@ enum StickerFactory {
             guard case .video = source else { throw Failure.unsupported }
             let frames = try await FrameExtractor.frames(
                 fromVideoAt: StickerSourceStore.url(for: source),
-                maxFrames: 30
+                maxFrames: 30,
+                onProgress: { onStage?(.extracting($0)) }
             )
-            return try await makeAnimated(from: frames, removeBackground: false, source: source)
+            return try await makeAnimated(
+                from: frames,
+                removeBackground: false,
+                source: source,
+                onStage: onStage
+            )
         }
 
         if types.contains(where: { $0.conforms(to: .gif) }) {
@@ -45,8 +55,15 @@ enum StickerFactory {
             guard let data = try? Data(contentsOf: StickerSourceStore.url(for: source)) else {
                 throw Failure.empty
             }
+            onStage?(.extracting(0))
             let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
-            return try await makeAnimated(from: frames, removeBackground: false, source: source)
+            onStage?(.extracting(1))
+            return try await makeAnimated(
+                from: frames,
+                removeBackground: false,
+                source: source,
+                onStage: onStage
+            )
         }
 
         if types.contains(where: { $0.conforms(to: .image) }) {
@@ -54,7 +71,7 @@ enum StickerFactory {
             guard let image = UIImage(data: data) else {
                 throw Failure.empty
             }
-            return try await makeStatic(from: image)
+            return try await makeStatic(from: image, onStage: onStage)
         }
 
         throw Failure.unsupported
@@ -62,11 +79,19 @@ enum StickerFactory {
 
     // MARK: - Paths
 
-    private static func makeStatic(from image: UIImage) async throws -> StickerItem {
+    private static func makeStatic(
+        from image: UIImage,
+        onStage: ((StickerCreationStage) -> Void)? = nil
+    ) async throws -> StickerItem {
         // Background removal is best-effort: any failure falls back to the
         // original image so sticker creation never blocks.
-        let subject = (try? await BackgroundRemover.removeBackground(from: image)) ?? image
-        return try encodeStatic(subject)
+        onStage?(.cutting(0))
+        let subject = (try? await BackgroundRemover.removeBackground(
+            from: image,
+            progress: { onStage?(.cutting($0)) }
+        )) ?? image
+        onStage?(.cutting(1))
+        return try encodeStatic(subject, onStage: onStage)
     }
 
     /// Loads a picked image as an upright `UIImage` without touching the pixels.
@@ -77,18 +102,26 @@ enum StickerFactory {
     }
 
     /// Encodes an already-prepared image into a static sticker (no background removal).
-    static func encodeStatic(_ image: UIImage, source: StickerSource? = nil) throws -> StickerItem {
+    static func encodeStatic(
+        _ image: UIImage,
+        source: StickerSource? = nil,
+        onStage: ((StickerCreationStage) -> Void)? = nil
+    ) throws -> StickerItem {
+        onStage?(.compressing)
         guard let stickerData = StickerEncoder.staticSticker(from: image),
               let previewData = StickerEncoder.previewPNG(from: image, size: 512) else {
             throw Failure.failed("Couldn't encode this sticker.")
         }
-        return StickerItem(
+        onStage?(.saving)
+        let item = StickerItem(
             kind: .static,
             emojis: [],
             stickerData: stickerData,
             previewData: previewData,
             source: source
         )
+        onStage?(.done)
+        return item
     }
 
     /// Loads a picked movie into a temporary file and reports its duration.
@@ -111,43 +144,61 @@ enum StickerFactory {
     ///
     /// `onProgress` (0...1, main queue): frame extraction when
     /// `removeBackground == false`, otherwise per-frame Vision across the clip.
+    /// `onStage` reports real phases and `nil`-free completion (`.done` last).
     static func makeAnimatedSticker(
         from draft: VideoDraft,
         range: ClosedRange<TimeInterval>,
         fps: Double,
         removeBackground: Bool = false,
         source: StickerSource? = nil,
-        onProgress: ((Double) -> Void)? = nil
+        onProgress: ((Double) -> Void)? = nil,
+        onStage: ((StickerCreationStage) -> Void)? = nil
     ) async throws -> StickerItem {
+        onStage?(.extracting(0))
         let frames = try await FrameExtractor.frames(
             fromVideoAt: draft.url,
             range: range,
             fps: fps,
-            onProgress: removeBackground ? nil : onProgress
+            onProgress: { value in
+                onStage?(.extracting(value))
+                if !removeBackground { onProgress?(value) }
+            }
         )
         return try await makeAnimated(
             from: frames,
             removeBackground: removeBackground,
             source: source,
-            onProgress: removeBackground ? onProgress : nil
+            onProgress: removeBackground ? onProgress : nil,
+            onStage: onStage
         )
     }
 
     /// Rebuilds an animated sticker from a stored GIF source.
-    static func makeAnimatedSticker(fromGIFSource source: StickerSource) async throws -> StickerItem {
+    static func makeAnimatedSticker(
+        fromGIFSource source: StickerSource,
+        onStage: ((StickerCreationStage) -> Void)? = nil
+    ) async throws -> StickerItem {
         guard case .gif = source else { throw Failure.unsupported }
         guard let data = try? Data(contentsOf: StickerSourceStore.url(for: source)) else {
             throw Failure.empty
         }
+        onStage?(.extracting(0))
         let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
-        return try await makeAnimated(from: frames, removeBackground: false, source: source)
+        onStage?(.extracting(1))
+        return try await makeAnimated(
+            from: frames,
+            removeBackground: false,
+            source: source,
+            onStage: onStage
+        )
     }
 
     private static func makeAnimated(
         from frames: [Frame],
         removeBackground: Bool,
         source: StickerSource?,
-        onProgress: ((Double) -> Void)? = nil
+        onProgress: ((Double) -> Void)? = nil,
+        onStage: ((StickerCreationStage) -> Void)? = nil
     ) async throws -> StickerItem {
         guard !frames.isEmpty else { throw Failure.empty }
 
@@ -155,27 +206,48 @@ enum StickerFactory {
         // cut, keep the original frames for all.
         let usable: [Frame]
         if removeBackground {
-            usable = await cutOut(frames, onProgress: onProgress) ?? frames
+            #if DEBUG
+            let visionStarted = CFAbsoluteTimeGetCurrent()
+            #endif
+            usable = await cutOut(frames, onProgress: { value in
+                onStage?(.cutting(value))
+                onProgress?(value)
+            }) ?? frames
+            #if DEBUG
+            let ms = (CFAbsoluteTimeGetCurrent() - visionStarted) * 1000
+            print(String(format: "[StickerFactory] vision %d frames in %.0fms", frames.count, ms))
+            #endif
         } else {
             usable = frames
         }
 
+        onStage?(.compressing)
+        #if DEBUG
+        let encodeStarted = CFAbsoluteTimeGetCurrent()
+        #endif
         guard let stickerData = StickerEncoder.animatedSticker(from: usable),
               let previewData = StickerEncoder.previewPNG(from: usable[0].image, size: 512) else {
             throw Failure.failed("Couldn't encode this animated sticker.")
         }
-
-        return StickerItem(
+        #if DEBUG
+        let encodeMs = (CFAbsoluteTimeGetCurrent() - encodeStarted) * 1000
+        print(String(format: "[StickerFactory] encode %d frames in %.0fms (%d bytes)", usable.count, encodeMs, stickerData.count))
+        #endif
+        onStage?(.saving)
+        let item = StickerItem(
             kind: .animated,
             emojis: [],
             stickerData: stickerData,
             previewData: previewData,
             source: source
         )
+        onStage?(.done)
+        return item
     }
 
-    /// Background-removes every frame. Returns nil when the first frame fails,
-    /// signalling the caller to use the original frames.
+    /// Background-removes every frame with bounded concurrency (Vision is the
+    /// heavy stage), preserving frame order. Returns nil when the first frame
+    /// fails, signalling the caller to use the original frames.
     ///
     /// `onProgress` maps each frame's Vision progress into the overall `0...1`.
     private static func cutOut(_ frames: [Frame], onProgress: ((Double) -> Void)? = nil) async -> [Frame]? {
@@ -194,16 +266,38 @@ enum StickerFactory {
             return nil
         }
 
-        var result = [Frame(image: firstCut, duration: first.duration)]
-        for (offset, frame) in frames.dropFirst().enumerated() {
-            let index = offset + 1
-            let image = (try? await BackgroundRemover.removeBackground(
-                from: frame.image,
-                progress: { onProgress?(mapped(index, $0)) }
-            )) ?? frame.image
-            result.append(Frame(image: image, duration: frame.duration))
+        var cut: [UIImage?] = Array(repeating: nil, count: frames.count)
+        cut[0] = firstCut
+        let maxInFlight = 3
+
+        await withTaskGroup(of: (Int, UIImage?).self) { group in
+            var nextIndex = 1
+            var inFlight = 0
+
+            while nextIndex < frames.count || inFlight > 0 {
+                while nextIndex < frames.count, inFlight < maxInFlight {
+                    let index = nextIndex
+                    let image = frames[index].image
+                    group.addTask {
+                        let result = try? await BackgroundRemover.removeBackground(
+                            from: image,
+                            progress: { onProgress?(mapped(index, $0)) }
+                        )
+                        return (index, result)
+                    }
+                    nextIndex += 1
+                    inFlight += 1
+                }
+                if let (index, image) = await group.next() {
+                    cut[index] = image ?? frames[index].image
+                    inFlight -= 1
+                }
+            }
         }
 
+        let result = (0..<frames.count).map { index in
+            Frame(image: cut[index] ?? frames[index].image, duration: frames[index].duration)
+        }
         onProgress?(1)
         return result
     }

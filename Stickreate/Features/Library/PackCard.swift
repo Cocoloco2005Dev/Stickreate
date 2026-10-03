@@ -7,21 +7,30 @@ struct PackCard: View {
     let pack: StickerPack
 
     private var thumbnail: UIImage? {
-        guard let data = pack.traySourcePreview else { return nil }
-        return UIImage(data: data)
+        guard let data = pack.traySourcePreview,
+              let image = UIImage(data: data) else { return nil }
+        return image
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             preview
 
             Text(pack.name)
                 .font(.headline)
                 .lineLimit(1)
 
-            Text(stickerCount)
+            Text(countAndKind)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            if let folder = pack.folder {
+                Label(folder, systemImage: "folder")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
         }
         .accessibilityElement(children: .combine)
     }
@@ -44,8 +53,15 @@ struct PackCard: View {
             }
     }
 
-    private var stickerCount: String {
-        pack.stickers.count == 1 ? "1 sticker" : "\(pack.stickers.count) stickers"
+    private var countAndKind: String {
+        let count = pack.stickers.count
+        let countText = count == 1 ? "1 sticker" : "\(count) stickers"
+        return "\(countText) · \(kindText)"
+    }
+
+    private var kindText: String {
+        if pack.isMixed { return "Mixed" }
+        return pack.kind?.label ?? "Empty"
     }
 }
 

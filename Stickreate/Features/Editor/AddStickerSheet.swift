@@ -18,6 +18,8 @@ struct AddStickerSheet: View {
 
     @State private var isImporting = false
     @State private var isProcessing = false
+    @State private var currentStage: StickerCreationStage?
+    @State private var committingID: UUID?
     @State private var errorMessage: String?
     @State private var editingItem: QueueItem?
 
@@ -117,11 +119,7 @@ struct AddStickerSheet: View {
             ProgressView("Importing…")
                 .controlSize(.large)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if isProcessing {
-            ProgressView("Adding…")
-                .controlSize(.large)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if queue.isEmpty {
+        } else if queue.isEmpty && !isProcessing {
             pickerState
         } else {
             queueState
@@ -165,6 +163,10 @@ struct AddStickerSheet: View {
         VStack(spacing: 0) {
             queueHeader
 
+            if isProcessing {
+                commitBanner
+            }
+
             List {
                 ForEach(queue) { item in
                     queueRow(item)
@@ -175,6 +177,34 @@ struct AddStickerSheet: View {
         }
     }
 
+    /// Shows the current item's creation stage while the queue is committed.
+    private var commitBanner: some View {
+        HStack(spacing: 12) {
+            if let fraction = currentStage?.fraction {
+                ProgressView(value: min(max(fraction, 0), 1))
+                    .progressViewStyle(.circular)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Text(currentStage?.label ?? "Adding…")
+                .font(.subheadline)
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(uiColor: .secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(currentStage?.label ?? "Adding")
+    }
+
     private var queueHeader: some View {
         HStack(spacing: 12) {
             Text("\(queue.count) \(queue.count == 1 ? "item" : "items")")
@@ -182,7 +212,7 @@ struct AddStickerSheet: View {
 
             Spacer(minLength: 0)
 
-            if available > 0 {
+            if available > 0 && !isProcessing {
                 PhotosPicker(
                     selection: $pickerSelection,
                     maxSelectionCount: available,
@@ -194,7 +224,7 @@ struct AddStickerSheet: View {
                 .accessibilityLabel("Add more photos or videos")
             }
 
-            if isCameraAvailable {
+            if isCameraAvailable && !isProcessing {
                 cameraIconButton
             }
         }
@@ -308,7 +338,7 @@ struct AddStickerSheet: View {
     }
 
     private func openEditor(_ item: QueueItem) {
-        guard isEditable(item.source) else { return }
+        guard !isProcessing, isEditable(item.source) else { return }
         editingItem = item
     }
 
@@ -318,6 +348,7 @@ struct AddStickerSheet: View {
     }
 
     private func remove(_ item: QueueItem) {
+        guard !isProcessing else { return }
         queue.removeAll { $0.id == item.id }
     }
 
@@ -358,51 +389,82 @@ struct AddStickerSheet: View {
         }
 
         isProcessing = true
-        defer { isProcessing = false }
+        defer {
+            isProcessing = false
+            currentStage = nil
+            committingID = nil
+        }
 
+        // Iterate a snapshot and drop each item only after it is added, so a
+        // failure keeps the remaining queue (and their edits) intact.
         for item in queue {
             do {
+                committingID = item.id
+                currentStage = .loading
                 let sticker = try await resolvedSticker(for: item)
                 try store.add(sticker, to: packID)
+                queue.removeAll { $0.id == item.id }
             } catch {
                 errorMessage = error.localizedDescription
                 return
             }
         }
 
-        queue = []
         dismiss()
     }
 
     private func resolvedSticker(for item: QueueItem) async throws -> StickerItem {
         if let sticker = item.sticker { return sticker }
-        return try await defaultSticker(for: item.source)
+        return try await defaultSticker(for: item)
     }
 
     /// Items the user never edited: photos keep their background; videos use the
-    /// first 10 s at 10 fps; GIFs rebuild from their stored source.
-    private func defaultSticker(for source: StickerSource) async throws -> StickerItem {
-        switch source {
+    /// first 10 s at the default frame rate; GIFs rebuild from their source.
+    private func defaultSticker(for item: QueueItem) async throws -> StickerItem {
+        switch item.source {
         case .image:
-            guard let image = StickerSourceStore.image(for: source) else {
+            guard let image = StickerSourceStore.image(for: item.source) else {
                 throw StickerFactory.Failure.empty
             }
-            return try StickerFactory.encodeStatic(image, source: source)
+            // `encodeStatic` is synchronous on the main actor, so assign directly.
+            let id = item.id
+            return try StickerFactory.encodeStatic(
+                image,
+                source: item.source,
+                onStage: { newStage in
+                    if committingID == id { currentStage = newStage }
+                }
+            )
 
         case .video:
-            let draft = try await StickerFactory.loadVideoDraft(from: source)
+            let onStage = stageHandler(for: item)
+            let draft = try await StickerFactory.loadVideoDraft(from: item.source)
             guard draft.duration > 0 else { throw StickerFactory.Failure.empty }
             let upper = min(draft.duration, Limits.maxAnimationDuration)
+            let fps = min(max(SettingsStore.shared.defaultFPS, 5), 30)
             return try await StickerFactory.makeAnimatedSticker(
                 from: draft,
                 range: 0...upper,
-                fps: 10,
+                fps: Double(fps),
                 removeBackground: false,
-                source: source
+                source: item.source,
+                onStage: onStage
             )
 
         case .gif:
-            return try await StickerFactory.makeAnimatedSticker(fromGIFSource: source)
+            return try await StickerFactory.makeAnimatedSticker(fromGIFSource: item.source)
+        }
+    }
+
+    /// Stage callbacks can arrive off the main actor, so hop back before
+    /// publishing. Stages from an item that is no longer committing are ignored.
+    private func stageHandler(for item: QueueItem) -> (StickerCreationStage) -> Void {
+        let id = item.id
+        return { newStage in
+            Task { @MainActor in
+                guard committingID == id else { return }
+                currentStage = newStage
+            }
         }
     }
 

@@ -20,9 +20,17 @@ enum StickerEncoder {
     /// Budget for animated stickers. WhatsApp enforces ~500 KB, so keep headroom.
     private static let animatedByteBudget = 450 * 1024
 
-    /// Short, fast quality ladder for animated WebP. Hard compression (method 6,
-    /// 10 passes, alpha quality 60) is applied at every step.
+    /// Short quality ladder for animated WebP. The first pass over this ladder
+    /// runs with libwebp's fast defaults; only the single best (smallest)
+    /// candidate is re-encoded with the slow settings.
     private static let animatedQualities: [Double] = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3]
+
+    /// libwebp method/pass. Method 4 is the encoder default (fast); the slow
+    /// method/pass pair buys size at a large CPU cost, so it runs at most once.
+    private static let fastMethod = 4
+    private static let fastPass = 1
+    private static let escalatedMethod = 6
+    private static let escalatedPass = 10
 
     /// Animated sticker from frames. Compresses hard on the full frame set first;
     /// only if that can't fit the 450 KB budget does it drop frames (keeping ≥ 2).
@@ -91,30 +99,88 @@ enum StickerEncoder {
         return nil
     }
 
-    /// Encodes `frames` as animated WebP, trying the short quality ladder with
-    /// hard compression options. Each attempt runs in its own autorelease pool so
-    /// peak memory stays flat. Returns the first result within budget.
+    /// Encodes `frames` as animated WebP.
+    ///
+    /// Fast path first: walks the quality ladder with libwebp's fast method/pass
+    /// (method 4, 1 pass) and returns the first result within budget. Only if no
+    /// rung fits does it re-encode the single smallest candidate once with the
+    /// slow settings (method 6, 10 passes). Each attempt runs in its own
+    /// autorelease pool so peak memory stays flat.
     private static func encodeAnimated(_ frames: [Frame], loopCount: UInt) -> Data? {
         let sdFrames = frames.map { SDImageFrame(image: $0.image, duration: $0.duration) }
+
+        var smallest: Data?
+        var smallestQuality: Double?
+
         for quality in animatedQualities {
-            let data = autoreleasepool { () -> Data? in
-                SDImageWebPCoder.shared.encodedData(
-                    with: sdFrames,
-                    loopCount: loopCount,
-                    format: .webP,
-                    options: [
-                        .encodeCompressionQuality: quality,
-                        .encodeWebPMethod: 6,
-                        .encodeWebPPass: 10,
-                        .encodeWebPAlphaQuality: 60
-                    ]
-                )
-            }
-            if let data, data.count <= animatedByteBudget {
+            let data = encodeAnimated(
+                sdFrames,
+                loopCount: loopCount,
+                quality: quality,
+                method: fastMethod,
+                pass: fastPass
+            )
+            guard let data else { continue }
+            if data.count <= animatedByteBudget {
                 return data
             }
+            if smallest == nil || data.count < smallest!.count {
+                smallest = data
+                smallestQuality = quality
+            }
+        }
+
+        // Nothing fit at fast settings: one last, slow attempt on the smallest
+        // candidate only (never re-encode every rung at method 6).
+        guard let quality = smallestQuality else { return nil }
+        let data = encodeAnimated(
+            sdFrames,
+            loopCount: loopCount,
+            quality: quality,
+            method: escalatedMethod,
+            pass: escalatedPass
+        )
+        if let data, data.count <= animatedByteBudget {
+            return data
         }
         return nil
+    }
+
+    /// Runs one animated encode attempt in its own autorelease pool and logs its
+    /// duration under `#if DEBUG`. Bytes/duration only — never frame content.
+    private static func encodeAnimated(
+        _ frames: [SDImageFrame],
+        loopCount: UInt,
+        quality: Double,
+        method: Int,
+        pass: Int
+    ) -> Data? {
+        let options: SDImageCoderOptions = [
+            .encodeCompressionQuality: quality,
+            .encodeWebPMethod: method,
+            .encodeWebPPass: pass,
+            .encodeWebPThreadLevel: 1,
+            .encodeWebPAlphaQuality: 60
+        ]
+        #if DEBUG
+        let started = CFAbsoluteTimeGetCurrent()
+        #endif
+        let data = autoreleasepool { () -> Data? in
+            SDImageWebPCoder.shared.encodedData(
+                with: frames,
+                loopCount: loopCount,
+                format: .webP,
+                options: options
+            )
+        }
+        #if DEBUG
+        let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
+        print(String(
+            format: "[StickerEncoder] animated q=%.2f method=%d pass=%d %.0fms -> %d bytes",
+            quality, method, pass, ms, data?.count ?? 0
+        ))
+        #endif
+        return data
     }
 
     // MARK: - Frame preparation

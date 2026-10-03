@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 /// Pack library. Content layer — cards stay opaque and Liquid Glass lives in the
 /// navigation bar plus the single primary action of the empty state.
 struct LibraryView: View {
     @State private var store = PackStore()
+    @State private var settings = SettingsStore.shared
     @State private var path: [UUID] = []
     @State private var searchText = ""
     @State private var folderFilter: FolderFilter = .all
@@ -27,14 +29,15 @@ struct LibraryView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            Group {
-                if store.packs.isEmpty {
-                    emptyState
-                } else if filteredPacks.isEmpty {
-                    noResultsState
-                } else {
-                    grid
+            VStack(spacing: 0) {
+                if !settings.hasSeenOnboarding {
+                    onboardingCard
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
                 }
+
+                mainContent
             }
             .navigationTitle("Sticker Packs")
             .navigationDestination(for: UUID.self) { id in
@@ -60,6 +63,64 @@ struct LibraryView: View {
             } message: {
                 Text(importError ?? "")
             }
+        }
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        if store.packs.isEmpty {
+            emptyState
+        } else if filteredPacks.isEmpty {
+            noResultsState
+        } else {
+            grid
+        }
+    }
+
+    // MARK: - Onboarding
+
+    private var onboardingCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label("Welcome to Stickreate", systemImage: "sparkles")
+                    .font(.headline)
+
+                Spacer(minLength: 8)
+
+                Button("Got it") {
+                    settings.hasSeenOnboarding = true
+                }
+                .font(.subheadline.weight(.semibold))
+                .accessibilityLabel("Dismiss the welcome card")
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                onboardingStep(1, "Create a pack")
+                onboardingStep(2, "Add and edit stickers")
+                onboardingStep(3, "Add to WhatsApp")
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(uiColor: .secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
+        .accessibilityElement(children: .contain)
+    }
+
+    private func onboardingStep(_ number: Int, _ title: String) -> some View {
+        HStack(spacing: 10) {
+            Text("\(number)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(Color.accentColor, in: Circle())
+
+            Text(title)
+                .font(.subheadline)
+
+            Spacer(minLength: 0)
         }
     }
 
@@ -107,12 +168,16 @@ struct LibraryView: View {
         ContentUnavailableView {
             Label("No Sticker Packs", systemImage: "square.grid.2x2")
         } description: {
-            Text("Create a pack to start making stickers for WhatsApp.")
+            Text("Packs group your stickers for WhatsApp. Create one, add photos or videos, then export.")
         } actions: {
             Button("New Pack", systemImage: "plus") {
                 createPack()
             }
             .buttonStyle(.glassProminent)
+
+            Button("Import a Pack", systemImage: "square.and.arrow.down") {
+                showingImporter = true
+            }
         }
     }
 

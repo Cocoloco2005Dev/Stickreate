@@ -1,16 +1,23 @@
 import SwiftUI
 import UIKit
 
-/// Confirms and hands a finished pack to WhatsApp. A single-kind pack exports
-/// with one prominent action; a mixed pack exports its static and animated
-/// subsets separately, because WhatsApp can't take both in one pack.
+/// Confirms and exports a finished pack. WhatsApp mode hands it to WhatsApp (a
+/// mixed pack exports its static and animated subsets separately); file mode
+/// shares a `.stickreatepack`.
 struct ExportSheet: View {
     let pack: StickerPack
 
     @Environment(\.dismiss) private var dismiss
 
+    @State private var settings = SettingsStore.shared
     @State private var exportedKinds: Set<StickerKind> = []
     @State private var errorMessage: String?
+    @State private var shareItem: ShareItem?
+
+    private struct ShareItem: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
 
     @MainActor private var isWhatsAppInstalled: Bool { WhatsAppExporter.isWhatsAppInstalled }
 
@@ -24,12 +31,17 @@ struct ExportSheet: View {
                 }
                 .padding(24)
             }
-            .navigationTitle("Add to WhatsApp")
+            .navigationTitle(settings.exportMode == .file ? "Export Pack" : "Add to WhatsApp")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+        }
+        .sheet(item: $shareItem) { item in
+            ActivityView(url: item.url) {
+                shareItem = nil
             }
         }
         .presentationDetents([.medium])
@@ -102,10 +114,39 @@ struct ExportSheet: View {
     @MainActor
     @ViewBuilder
     private var actions: some View {
-        if pack.isMixed {
+        if settings.exportMode == .file {
+            fileActions
+        } else if pack.isMixed {
             mixedActions
         } else {
             singleAction
+        }
+    }
+
+    @MainActor
+    private var fileActions: some View {
+        VStack(spacing: 12) {
+            Button {
+                shareFile()
+            } label: {
+                Label("Share Pack File", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(.glassProminent)
+
+            Text("Shares a .stickreatepack. Anyone with Stickreate can import it later.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    @MainActor
+    private func shareFile() {
+        do {
+            let url = try PackArchive.writeTemporaryFile(pack)
+            shareItem = ShareItem(url: url)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

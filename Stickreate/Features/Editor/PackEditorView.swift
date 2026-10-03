@@ -9,6 +9,7 @@ struct PackEditorView: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    @State private var settings = SettingsStore.shared
     @State private var showingAdd = false
     @State private var showingExport = false
     @State private var deleteTarget: DeleteTarget?
@@ -147,6 +148,8 @@ struct PackEditorView: View {
             VStack(alignment: .leading, spacing: 16) {
                 header(for: pack)
 
+                exportAction(for: pack)
+
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(pack.stickers) { item in
                         let index = pack.stickers.firstIndex(of: item) ?? 0
@@ -212,6 +215,48 @@ struct PackEditorView: View {
     private func kindSymbol(for pack: StickerPack) -> String {
         if pack.isMixed { return "square.grid.2x2" }
         return pack.kind == .animated ? "play.rectangle" : "photo"
+    }
+
+    // MARK: - Primary export action
+
+    @ViewBuilder
+    private func exportAction(for pack: StickerPack) -> some View {
+        if canExport {
+            Button {
+                showingExport = true
+            } label: {
+                Label(exportTitle, systemImage: exportSymbol)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.glassProminent)
+            .tint(settings.exportMode == .file ? Color.accentColor : .green)
+            .accessibilityHint("Opens the export options")
+        } else {
+            Label(exportHint(for: pack), systemImage: "info.circle")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel(exportHint(for: pack))
+        }
+    }
+
+    private var exportTitle: String {
+        settings.exportMode == .file ? "Export Pack" : "Add to WhatsApp"
+    }
+
+    private var exportSymbol: String {
+        settings.exportMode == .file ? "square.and.arrow.up" : "plus.message"
+    }
+
+    private func exportHint(for pack: StickerPack) -> String {
+        if pack.isMixed {
+            return "Each kind needs at least \(Limits.minStickers) stickers to export."
+        }
+        let needed = max(0, Limits.minStickers - pack.stickers.count)
+        return needed == 1
+            ? "Add 1 more sticker to export to WhatsApp."
+            : "Add \(needed) more stickers to export to WhatsApp."
     }
 
     // MARK: - Tile menu

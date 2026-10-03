@@ -30,7 +30,7 @@ struct VideoTrimView: View {
 
     @State private var lowerBound: TimeInterval = 0
     @State private var upperBound: TimeInterval = 0
-    @State private var fps: Int = 10
+    @State private var fps: Int = min(max(SettingsStore.shared.defaultFPS, 5), 30)
 
     @State private var player: AVPlayer?
     @State private var isPlaying = false
@@ -42,10 +42,17 @@ struct VideoTrimView: View {
     @State private var backgroundChoice: StickerBackgroundChoice = .original
 
     @State private var isCreating = false
-    @State private var conversionProgress: Double = 0
+    @State private var stage: StickerCreationStage?
     @State private var errorMessage: String?
 
-    private static let fpsOptions = [5, 10, 15, 20, 24, 30]
+    private static let standardFPSOptions = [5, 10, 15, 20, 24, 30]
+
+    /// Includes the initial default fps even when it isn't a standard option,
+    /// so the segmented control always has a selected value.
+    private var fpsOptions: [Int] {
+        let base = Self.standardFPSOptions
+        return base.contains(fps) ? base : (base + [fps]).sorted()
+    }
 
     private var sourceURL: URL { StickerSourceStore.url(for: source) }
 
@@ -208,7 +215,7 @@ struct VideoTrimView: View {
             }
 
             Picker("Frame rate", selection: $fps) {
-                ForEach(Self.fpsOptions, id: \.self) { value in
+                ForEach(fpsOptions, id: \.self) { value in
                     Text("\(value)").tag(value)
                 }
             }
@@ -229,12 +236,11 @@ struct VideoTrimView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 14) {
-                ProgressView()
-                    .tint(.white)
-                Text(creatingLabel)
+                stageIndicator
+
+                Text(stageLabel)
                     .font(.headline)
                     .foregroundStyle(.white)
-                    .monospacedDigit()
             }
             .padding(28)
             .background(
@@ -243,14 +249,24 @@ struct VideoTrimView: View {
             )
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(creatingLabel)
+        .accessibilityLabel(stageLabel)
     }
 
-    private var creatingLabel: String {
-        let percent = Int((conversionProgress * 100).rounded())
-        return backgroundChoice == .aiCut
-            ? "Removing background… \(percent)%"
-            : "Converting… \(percent)%"
+    @ViewBuilder
+    private var stageIndicator: some View {
+        if let fraction = stage?.fraction {
+            // Determinate stages only; `.compressing` is indeterminate.
+            ProgressView(value: min(max(fraction, 0), 1))
+                .progressViewStyle(.circular)
+                .tint(.white)
+        } else {
+            ProgressView()
+                .tint(.white)
+        }
+    }
+
+    private var stageLabel: String {
+        stage?.label ?? "Preparing…"
     }
 
     // MARK: - Loading
@@ -370,7 +386,7 @@ struct VideoTrimView: View {
         let range = lowerBound...upperBound
         let removeBackground = backgroundChoice == .aiCut
         isCreating = true
-        conversionProgress = 0
+        stage = .loading
         player?.pause()
         isPlaying = false
 
@@ -382,9 +398,11 @@ struct VideoTrimView: View {
                     fps: Double(fps),
                     removeBackground: removeBackground,
                     source: source,
-                    // Documented as a 0...1 callback on the main queue.
-                    onProgress: { fraction in
-                        conversionProgress = fraction
+                    onStage: { newStage in
+                        // Stage callbacks can arrive off the main actor.
+                        Task { @MainActor in
+                            stage = newStage
+                        }
                     }
                 )
                 isCreating = false

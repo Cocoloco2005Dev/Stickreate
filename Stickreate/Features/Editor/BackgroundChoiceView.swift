@@ -15,7 +15,7 @@ struct BackgroundChoiceView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Text("Keep the background or cut out the subject.")
+            Text("Keep the background or lift the subject with Intelligent Cut.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -23,9 +23,15 @@ struct BackgroundChoiceView: View {
 
             HStack(spacing: 16) {
                 card(for: .original, title: "Original", subtitle: "Keeps the background")
-                card(for: .aiCut, title: "AI Cut", subtitle: "Removes the background")
+                card(for: .aiCut, title: "Intelligent Cut", subtitle: "Apple Vision · on-device")
             }
             .padding(.horizontal, 20)
+
+            Text("Intelligent Cut runs on this iPhone. Your photo never leaves the device.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
 
             Spacer(minLength: 0)
         }
@@ -96,7 +102,7 @@ struct BackgroundChoiceView: View {
         case .aiCut:
             ZStack {
                 CheckerboardSwatch()
-                Image(systemName: "wand.and.sparkles")
+                Image(systemName: "person.crop.rectangle")
                     .font(.system(size: 34, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
             }
@@ -104,7 +110,7 @@ struct BackgroundChoiceView: View {
     }
 }
 
-/// Small checkerboard used behind the AI Cut swatch. Content layer — never glass.
+/// Small checkerboard used behind the Intelligent Cut swatch. Content layer — never glass.
 private struct CheckerboardSwatch: View {
     private let cell: CGFloat = 12
 
