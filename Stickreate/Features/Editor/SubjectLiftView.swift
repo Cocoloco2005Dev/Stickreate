@@ -160,6 +160,7 @@ final class SubjectLiftModel {
 
     /// Returns the background-removed image for the highlighted subject, or the
     /// single subject when only one exists. `nil` when nothing is available.
+    @MainActor
     func lift() async throws -> UIImage? {
         guard let interaction else { return nil }
         let chosen = interaction.highlightedSubjects.isEmpty
@@ -214,7 +215,7 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
             model: SubjectLiftModel
         ) {
             pollTask?.cancel()
-            pollTask = Task { [weak model] in
+            pollTask = Task { @MainActor [weak model] in
                 guard let model else { return }
 
                 do {
@@ -276,7 +277,7 @@ enum SubjectCutoutMask {
                       bitsPerComponent: 8,
                       bytesPerRow: width,
                       space: nil,
-                      bitmapInfo: CGImageAlphaInfo.only.rawValue
+                      bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
                   ) else { return false }
             context.translateBy(x: 0, y: CGFloat(height))
             context.scaleBy(x: 1, y: -1)
