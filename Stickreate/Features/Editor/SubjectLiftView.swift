@@ -163,11 +163,9 @@ final class SubjectLiftModel {
     @MainActor
     func lift() async throws -> UIImage? {
         guard let interaction else { return nil }
-        let chosen = await MainActor.run {
-            interaction.highlightedSubjects.isEmpty
-                ? interaction.subjects
-                : interaction.highlightedSubjects
-        }
+        let highlighted = await interaction.highlightedSubjects
+        let all = await interaction.subjects
+        let chosen = highlighted.isEmpty ? all : highlighted
         guard !chosen.isEmpty else { return nil }
         return try await interaction.image(for: chosen)
     }
@@ -237,15 +235,16 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
                 // resolves or we time out (~12s).
                 for _ in 0..<24 {
                     if Task.isCancelled { return }
-                    let count = await MainActor.run { interaction.subjects.count }
-                    if count > 0 {
-                        model.subjectCount = count
+                    let subjects = await interaction.subjects
+                    if !subjects.isEmpty {
+                        model.subjectCount = subjects.count
                         model.isAnalyzing = false
                         return
                     }
                     try? await Task.sleep(for: .seconds(0.5))
                 }
-                model.subjectCount = await MainActor.run { interaction.subjects.count }
+                let remaining = await interaction.subjects
+                model.subjectCount = remaining.count
                 model.isAnalyzing = false
             }
         }
