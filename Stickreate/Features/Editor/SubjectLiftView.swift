@@ -282,7 +282,8 @@ final class SubjectLiftModel {
     func liftFromInteraction() async {
         guard let interaction else { return }
         let highlighted = interaction.highlightedSubjects
-        let chosen = highlighted.isEmpty ? interaction.subjects : highlighted
+        let all = await interaction.subjects
+        let chosen = highlighted.isEmpty ? all : highlighted
         guard !chosen.isEmpty else {
             errorMessage = "Press and hold a subject first."
             return
@@ -376,11 +377,13 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
                 // initial analysis, so `subjects` may start empty.
                 for _ in 0..<24 {
                     if Task.isCancelled { return }
-                    if !interaction.subjects.isEmpty { break }
+                    let current = await interaction.subjects
+                    if !current.isEmpty { break }
                     try? await Task.sleep(for: .seconds(0.5))
                 }
                 guard !Task.isCancelled else { return }
-                model.subjectCount = interaction.subjects.count
+                let finalSubjects = await interaction.subjects
+                model.subjectCount = finalSubjects.count
                 model.isAnalyzing = false
 
                 // Auto-materialize the cut-out when the user highlights a subject
