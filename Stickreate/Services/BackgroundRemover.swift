@@ -19,12 +19,22 @@ enum BackgroundRemover {
         }
     }
 
+    /// One detected subject instance and its high-resolution mask.
+    struct SubjectInstance: Identifiable {
+        /// Vision's instance index (1-based; index 0 is the background).
+        let id: Int
+        /// Single-channel mask, white = keep, same pixel size as the input.
+        let mask: CGImage
+    }
+
     /// A subject cut-out plus the single-channel mask Vision used to build it.
     struct SubjectExtraction {
         /// Subject on a transparent background.
         let cutout: UIImage
         /// Single-channel mask, white = keep, same pixel size as the input.
         let mask: CGImage
+        /// Every foreground instance, each with its own mask.
+        let instances: [SubjectInstance]
     }
 
     private static let context = CIContext()
@@ -40,7 +50,8 @@ enum BackgroundRemover {
         return extraction.cutout
     }
 
-    /// Returns both the cut-out and the raw subject mask so the user can edit it.
+    /// Returns the cut-out, the combined subject mask, and a per-instance mask
+    /// for every detected foreground subject, so the user can edit the mask.
     ///
     /// The Vision pass runs off the main thread. `progress` is reported on the
     /// main queue with values in `0...1`.
@@ -86,10 +97,22 @@ enum BackgroundRemover {
                         return
                     }
 
+                    // One high-resolution mask per detected foreground instance.
+                    let instances: [SubjectInstance] = result.allInstances.compactMap { index in
+                        guard let instanceBuffer = try? result.generateScaledMaskForImage(
+                            forInstances: IndexSet(integer: index),
+                            from: handler
+                        ), let instanceMask = makeMaskImage(from: instanceBuffer) else {
+                            return nil
+                        }
+                        return SubjectInstance(id: index, mask: instanceMask)
+                    }
+
                     if !reportsProgress { reportProgress(progress, 1) }
                     continuation.resume(returning: SubjectExtraction(
                         cutout: UIImage(cgImage: cutoutCG),
-                        mask: mask
+                        mask: mask,
+                        instances: instances
                     ))
                 } catch {
                     continuation.resume(throwing: Failure.failed(error.localizedDescription))

@@ -137,10 +137,13 @@ enum StickerFactory {
         return try await FrameExtractor.videoDraft(from: StickerSourceStore.url(for: source))
     }
 
-    /// Builds an animated sticker from a trimmed video range at the given fps.
+    /// Builds an animated sticker from a trimmed video range.
     ///
-    /// Background removal is opt-in (off by default): per-frame Vision is slow
-    /// and memory-hungry, and video stickers rarely need it.
+    /// `fps <= 0` lets the extractor choose a sane automatic rate. `cropRect`
+    /// is a normalized top-left rect applied to every frame before encoding
+    /// (`nil` = full frame). Background removal is opt-in (off by default):
+    /// per-frame Vision is slow and memory-hungry, and video stickers rarely
+    /// need it.
     ///
     /// `onProgress` (0...1, main queue): frame extraction when
     /// `removeBackground == false`, otherwise per-frame Vision across the clip.
@@ -148,14 +151,15 @@ enum StickerFactory {
     static func makeAnimatedSticker(
         from draft: VideoDraft,
         range: ClosedRange<TimeInterval>,
-        fps: Double,
+        fps: Double = 0,
         removeBackground: Bool = false,
+        cropRect: CGRect? = nil,
         source: StickerSource? = nil,
         onProgress: ((Double) -> Void)? = nil,
         onStage: ((StickerCreationStage) -> Void)? = nil
     ) async throws -> StickerItem {
         onStage?(.extracting(0))
-        let frames = try await FrameExtractor.frames(
+        let extracted = try await FrameExtractor.frames(
             fromVideoAt: draft.url,
             range: range,
             fps: fps,
@@ -164,6 +168,9 @@ enum StickerFactory {
                 if !removeBackground { onProgress?(value) }
             }
         )
+        let frames = cropRect.map { rect in
+            extracted.map { Frame(image: crop($0.image, to: rect), duration: $0.duration) }
+        } ?? extracted
         return try await makeAnimated(
             from: frames,
             removeBackground: removeBackground,
@@ -171,6 +178,24 @@ enum StickerFactory {
             onProgress: removeBackground ? onProgress : nil,
             onStage: onStage
         )
+    }
+
+    /// Crops a normalized (top-left) rect out of `image`, preserving duration.
+    private static func crop(_ image: UIImage, to rect: CGRect) -> UIImage {
+        let oriented = image.upNormalized() ?? image
+        guard let cgImage = oriented.cgImage else { return image }
+        let width = CGFloat(cgImage.width)
+        let height = CGFloat(cgImage.height)
+        let clamped = CGRect(
+            x: rect.minX * width,
+            y: rect.minY * height,
+            width: rect.width * width,
+            height: rect.height * height
+        ).intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !clamped.isEmpty, let cropped = cgImage.cropping(to: clamped.integral) else {
+            return image
+        }
+        return UIImage(cgImage: cropped)
     }
 
     /// Rebuilds an animated sticker from a stored GIF source.

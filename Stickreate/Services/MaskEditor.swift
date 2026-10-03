@@ -35,6 +35,10 @@ final class MaskEditor {
     private let subjectMask: [UInt8]?
     /// Whether the subject cut-out is currently in use.
     private var backgroundRemoved: Bool
+    /// Vision's per-instance masks keyed by 1-based instance id, in editor pixels.
+    private var instanceMasks: [Int: [UInt8]] = [:]
+    /// Selected instance ids; empty means the whole image is kept.
+    private(set) var selectedInstanceIDs: Set<Int> = []
     private var undoStack: [[UInt8]] = []
     private var redoStack: [[UInt8]] = []
 
@@ -71,6 +75,51 @@ final class MaskEditor {
         self.preview = scaledBase
 
         refreshPreview()
+    }
+
+    /// Builds an editor seeded with Vision's per-instance masks. Starts with
+    /// every instance selected (the combined subject mask).
+    convenience init(
+        base: UIImage,
+        instances: [BackgroundRemover.SubjectInstance],
+        maxDimension: Int = 1024
+    ) {
+        self.init(base: base, mask: MaskEditor.combinedMask(instances), maxDimension: maxDimension)
+        for instance in instances {
+            instanceMasks[instance.id] = MaskCompositor.seed(
+                bytesFrom: instance.mask,
+                width: pixelWidth,
+                height: pixelHeight
+            )
+        }
+        selectedInstanceIDs = Set(instances.map(\.id))
+    }
+
+    /// Union of the instance masks as one grayscale image (`nil` when empty).
+    private static func combinedMask(_ instances: [BackgroundRemover.SubjectInstance]) -> CGImage? {
+        guard !instances.isEmpty else { return nil }
+        let width = instances.map { $0.mask.width }.max() ?? 0
+        let height = instances.map { $0.mask.height }.max() ?? 0
+        guard width > 0, height > 0 else { return nil }
+
+        var bytes = [UInt8](repeating: 0, count: width * height)
+        bytes.withUnsafeMutableBytes { buffer in
+            guard let base = buffer.baseAddress,
+                  let context = CGContext(
+                      data: base,
+                      width: width,
+                      height: height,
+                      bitsPerComponent: 8,
+                      bytesPerRow: width,
+                      space: CGColorSpaceCreateDeviceGray(),
+                      bitmapInfo: CGImageAlphaInfo.none.rawValue
+                  ) else { return }
+            context.setBlendMode(.lighten) // union = per-pixel max
+            for instance in instances {
+                context.draw(instance.mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+            }
+        }
+        return MaskCompositor.maskCGImage(bytes: bytes, width: width, height: height)
     }
 
     // MARK: - Editing
@@ -163,6 +212,46 @@ final class MaskEditor {
             context.fillPath()
         }
         refreshPreview()
+    }
+
+    /// Rebuilds the keep mask as the union of the selected instances' masks.
+    /// An empty selection keeps everything. Pushes an undo step and refreshes.
+    func setInstances(_ ids: Set<Int>) {
+        let valid = ids.filter { instanceMasks[$0] != nil }
+        pushUndo()
+        selectedInstanceIDs = valid
+        if valid.isEmpty {
+            maskData = whiteMask
+            backgroundRemoved = false
+        } else {
+            var union = [UInt8](repeating: 0, count: whiteMask.count)
+            for id in valid {
+                guard let instance = instanceMasks[id] else { continue }
+                for index in union.indices where instance[index] > union[index] {
+                    union[index] = instance[index]
+                }
+            }
+            maskData = union
+            backgroundRemoved = true
+        }
+        refreshPreview()
+    }
+
+    /// The Vision instance whose mask contains `point` (normalized, top-left
+    /// origin), or `nil` over the background. Ties go to the strongest coverage.
+    func instanceID(at point: CGPoint) -> Int? {
+        guard !instanceMasks.isEmpty, pixelWidth > 0, pixelHeight > 0 else { return nil }
+        let x = min(pixelWidth - 1, Int(min(max(point.x, 0), 1) * CGFloat(pixelWidth)))
+        let y = min(pixelHeight - 1, Int(min(max(point.y, 0), 1) * CGFloat(pixelHeight)))
+        let index = y * pixelWidth + x
+        var best: (id: Int, value: UInt8)?
+        for (id, mask) in instanceMasks where index < mask.count {
+            let value = mask[index]
+            if value > 0, best == nil || value > best!.value {
+                best = (id, value)
+            }
+        }
+        return best?.id
     }
 
     /// Switches between Vision's subject cut-out and keeping everything.
@@ -297,7 +386,7 @@ final class MaskEditor {
 }
 
 /// Nonisolated pixel helpers so compositing can run off the main thread.
-private enum MaskCompositor {
+fileprivate enum MaskCompositor {
     static let context = CIContext()
 
     /// Renders `mask` into a top-left row-major grayscale buffer of `width`×`height`.
@@ -345,7 +434,7 @@ private enum MaskCompositor {
         return UIImage(cgImage: cgImage)
     }
 
-    private static func maskCGImage(bytes: [UInt8], width: Int, height: Int) -> CGImage? {
+    fileprivate static func maskCGImage(bytes: [UInt8], width: Int, height: Int) -> CGImage? {
         guard width > 0, height > 0, bytes.count >= width * height,
               let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)

@@ -39,7 +39,10 @@ final class PackStore {
         guard let index = packs.firstIndex(where: { $0.id == packID }) else { return }
         var pack = packs[index]
 
-        // Mixed kinds are allowed; the exporter splits them on export.
+        // Packs are single-kind: adding the other kind would mix them.
+        if let existing = pack.stickers.first, existing.kind != item.kind {
+            throw StickerPack.ValidationError.mixedKinds
+        }
         guard pack.stickers.count < Limits.maxStickers else {
             throw StickerPack.ValidationError.tooMany(Limits.maxStickers)
         }

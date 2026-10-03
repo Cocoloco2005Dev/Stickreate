@@ -56,10 +56,8 @@ enum FrameExtractor {
         return await task.value
     }
 
-    /// Extracts evenly-spaced frames from a video, capped at `maxFrames`.
-    ///
-    /// Only the first 10 s are sampled (WhatsApp's animation ceiling). Frame
-    /// rate is derived from `maxFrames` so the loop length matches the span.
+    /// Extracts evenly-spaced frames from the first 10 s of a video, capped at
+    /// `maxFrames`. The frame rate is chosen automatically to fill the cap.
     /// `onProgress` is reported on the main queue.
     static func frames(
         fromVideoAt url: URL,
@@ -69,38 +67,47 @@ enum FrameExtractor {
         let duration = try await loadDuration(of: url)
         let span = min(duration, Limits.maxAnimationDuration)
         guard span > 0 else { throw Failure.empty }
-        let fps = min(30, max(1, Double(max(1, maxFrames)) / span))
         return try await frames(
             fromVideoAt: url,
             range: 0...span,
-            fps: fps,
+            fps: 0,
             maxFrames: maxFrames,
             onProgress: onProgress
         )
     }
 
-    /// Extracts frames from a trimmed `range` at `fps` frames per second,
-    /// never exceeding `maxFrames`. `fps` is clamped to 1...30 and each frame
-    /// lasts `1/fps` (at least `Limits.minFrameDuration`).
+    /// Extracts frames from a trimmed `range`.
+    ///
+    /// `fps <= 0` selects an automatic rate that fills `maxFrames` across the
+    /// span (30 fps for short clips, lower for long ones). `fps` is otherwise
+    /// clamped to 1...30.
+    ///
+    /// Each frame lasts the actual sampling step `span / count`, so the summed
+    /// animation duration always equals the trimmed span even when the frame
+    /// count is capped at `maxFrames`. Durations never fall below
+    /// `Limits.minFrameDuration`, and at least two frames are emitted for any
+    /// positive span so a valid animated payload is always possible.
     ///
     /// `onProgress` is reported on the main queue as each frame is decoded.
     static func frames(
         fromVideoAt url: URL,
         range: ClosedRange<TimeInterval>,
-        fps: Double,
+        fps: Double = 0,
         maxFrames: Int = 150,
         onProgress: ((Double) -> Void)? = nil
     ) async throws -> [Frame] {
-        let clampedFPS = min(max(fps, 1), 30)
         let lower = max(0, range.lowerBound)
         let upper = max(lower, range.upperBound)
         let span = upper - lower
         guard span > 0 else { throw Failure.empty }
 
         let cap = max(1, maxFrames)
-        let count = max(1, min(cap, Int((span * clampedFPS).rounded())))
+        let requestedFPS = fps > 0 ? min(max(fps, 1), 30) : automaticFPS(span: span, maxFrames: cap)
+        let sampled = max(1, min(cap, Int((span * requestedFPS).rounded())))
+        // Two frames minimum so the encoder always has a valid animation.
+        let count = cap >= 2 ? max(2, sampled) : sampled
         let step = span / Double(count)
-        let frameDuration = max(1 / clampedFPS, Limits.minFrameDuration)
+        let frameDuration = max(step, Limits.minFrameDuration)
 
         let times = (0..<count).map {
             CMTime(seconds: lower + step * Double($0), preferredTimescale: 600)
@@ -128,12 +135,32 @@ enum FrameExtractor {
                 onProgress: onProgress
             )
         }
-        let frames = try await task.value
+        var frames = try await task.value
+
+        // If a decoder dropped trailing targets (end-of-clip gap), repeat the
+        // last frame so the summed duration still equals the span.
+        if frames.count < count, let last = frames.last {
+            while frames.count < count {
+                frames.append(Frame(image: last.image, duration: frameDuration))
+            }
+        }
         #if DEBUG
+        let total = frames.reduce(0) { $0 + $1.duration }
+        let drift = abs(total - span)
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
-        print(String(format: "[FrameExtractor] video %d frames in %.0fms", frames.count, ms))
+        print(String(
+            format: "[FrameExtractor] %d frames @ %.1fms total %.3fs span %.3fs drift %.1fms in %.0fms",
+            frames.count, frameDuration * 1000, total, span, drift * 1000, ms
+        ))
+        assert(drift < 0.05, "Frame durations must sum to the requested span")
         #endif
         return frames
+    }
+
+    /// Automatic frame rate that fills `maxFrames` across `span`, capped at 30.
+    private static func automaticFPS(span: TimeInterval, maxFrames: Int) -> Double {
+        guard span > 0 else { return 1 }
+        return min(30, max(1, Double(max(1, maxFrames)) / span))
     }
 
     /// Decodes `times` in a single sequential pass with `AVAssetReader`, keeping
@@ -329,6 +356,11 @@ enum FrameExtractor {
         }
 
         guard !frames.isEmpty else { throw Failure.empty }
+
+        // A one-frame GIF isn't a valid animation; duplicate it.
+        if frames.count == 1, let only = frames.first {
+            frames.append(Frame(image: only.image, duration: only.duration))
+        }
         #if DEBUG
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
         print(String(format: "[FrameExtractor] gif %d frames in %.0fms", frames.count, ms))
