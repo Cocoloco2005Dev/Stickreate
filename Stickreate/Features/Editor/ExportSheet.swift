@@ -16,6 +16,7 @@ struct ExportSheet: View {
     @State private var isExported = false
     @State private var errorMessage: String?
     @State private var shareItem: ShareItem?
+    @State private var previewItem: StickerItem?
     @State private var detent: PresentationDetent = .large
 
     private struct ShareItem: Identifiable {
@@ -33,8 +34,8 @@ struct ExportSheet: View {
                 if let pack {
                     ScrollView {
                         VStack(spacing: 24) {
-                            preview(pack)
                             header(pack)
+                            preview(pack)
                             actions(pack)
                         }
                         .padding(24)
@@ -54,6 +55,9 @@ struct ExportSheet: View {
                 shareItem = nil
             }
         }
+        .sheet(item: $previewItem) { item in
+            StickerPreviewSheet(item: item)
+        }
         .presentationDetents([.medium, .large], selection: $detent)
         .alert(
             "Couldn't add pack",
@@ -68,16 +72,24 @@ struct ExportSheet: View {
         }
     }
 
+    /// Every sticker in the pack, all scrollable. Tapping one opens the large
+    /// read-only preview.
     private func preview(_ pack: StickerPack) -> some View {
         LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
             spacing: 8
         ) {
-            ForEach(pack.stickers.prefix(6)) { item in
-                stickerThumbnail(item)
+            ForEach(Array(pack.stickers.enumerated()), id: \.element.id) { index, item in
+                Button {
+                    previewItem = item
+                } label: {
+                    stickerThumbnail(item)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Sticker \(index + 1) of \(pack.stickers.count)")
+                .accessibilityHint("Opens a large preview")
             }
         }
-        .accessibilityHidden(true)
     }
 
     private func stickerThumbnail(_ item: StickerItem) -> some View {
@@ -95,6 +107,18 @@ struct ExportSheet: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                if item.kind == .animated {
+                    Image(systemName: "play.fill")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(.black.opacity(0.45), in: Circle())
+                        .padding(6)
+                        .accessibilityHidden(true)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func header(_ pack: StickerPack) -> some View {

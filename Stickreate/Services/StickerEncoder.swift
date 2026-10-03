@@ -17,12 +17,14 @@ enum StickerEncoder {
 
     // MARK: - Animated
 
-    /// Budget for animated stickers. WhatsApp enforces ~500 KB, so keep headroom.
-    private static let animatedByteBudget = 450 * 1024
+    /// Target budget for animated stickers. WhatsApp enforces a 500 KB hard cap;
+    /// aim just under it so we can keep as many frames as possible.
+    private static let animatedByteBudget = 480 * 1024
 
-    /// Short quality ladder (libwebp 0...100). The native animated encoder is
-    /// fast, so re-encoding at a few qualities is cheaper than dropping frames.
-    private static let animatedQualities: [Float] = [80, 65, 50, 35]
+    /// Quality ladder (libwebp 0...100), walked top-down before ANY frames are
+    /// dropped. The native animated encoder exploits inter-frame redundancy, so
+    /// lowering quality is cheaper (and keeps more motion) than dropping frames.
+    private static let animatedQualities: [Float] = [90, 80, 70, 60, 50, 40, 30, 25]
 
     /// libwebp animated method. Method 4 is the fast default; the native encoder
     /// already exploits inter-frame redundancy, so an expensive method is not
@@ -37,10 +39,11 @@ enum StickerEncoder {
     /// Animated sticker from frames, using libwebp's native `WebPAnimEncoder`
     /// (inter-frame compression) via `WebPAnimationEncoder`.
     ///
-    /// Runs the 450 KB budget check on the full frame set at a short quality
-    /// ladder first; only if every quality is over budget does it drop frames
-    /// (never below two). Falls back to the per-frame static encoder only when
-    /// the C encoder itself fails.
+    /// Quality first: the full frame set is walked down the whole quality ladder
+    /// before ANY frames are dropped. Only if the lowest quality still exceeds
+    /// the budget are frames dropped — gently, keeping ~75% then ~50%, never
+    /// below `minFramesAfterDrop` (or half the set, whichever is larger). Falls
+    /// back to the per-frame static encoder only when the C encoder itself fails.
     ///
     /// The canvas stays exactly 512×512 (a WhatsApp requirement — dimensions are
     /// never reduced). Requires at least two frames; one frame is not a valid
@@ -61,7 +64,7 @@ enum StickerEncoder {
 
         let loop = max(0, loopCount)
 
-        // Full frame set first, then progressively fewer frames (never below 2).
+        // Full frame set first, then gently fewer frames (never below 2).
         var candidates: [[Frame]] = [prepared]
         candidates.append(contentsOf: frameLadder(prepared))
 
@@ -102,10 +105,15 @@ enum StickerEncoder {
                     quality: Double(quality) / 100.0
                 )
                 attempt += 1
+                // 480 KB target is below the 500 KB hard cap, so this also
+                // guarantees WhatsApp compliance.
                 if let data, data.count <= animatedByteBudget {
                     #if DEBUG
                     let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
-                    print("[StickerEncoder] animated q=\(Int(quality)) \(Int(ms.rounded()))ms -> \(data.count) bytes")
+                    print(String(
+                        format: "[StickerEncoder] animated %d frames q=%d %.0fms -> %d bytes",
+                        images.count, Int(quality), ms, data.count
+                    ))
                     #endif
                     onProgress?(1.0)
                     return data
@@ -115,7 +123,7 @@ enum StickerEncoder {
 
         #if DEBUG
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
-        print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms")
+        print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms (kept ≥ \(minFramesAfterDrop) frames)")
         #endif
         onProgress?(1.0)
         return nil
@@ -242,19 +250,25 @@ enum StickerEncoder {
         return result
     }
 
-    /// Smallest frame count the size-budget ladder may fall back to, so a
-    /// sticker never ends up with a "very few frames" animation. The hard floor
+    /// Frame count the size-budget ladder must never drop below. Drops are
+    /// gentle — keep ~75%, then ~50% — but never below this (or half the set,
+    /// whichever is larger), so a video never loses its motion. The hard floor
     /// of 2 still applies upstream (a valid animation needs ≥ 2).
-    private static let minUsableFrames = 8
+    private static let minFramesAfterDrop = 24
 
-    /// Progressively fewer frames: every 2nd, then 16, 12, 9 — never the full set
-    /// (the caller tries that first) and never below `minUsableFrames`.
+    /// Gentle frame-drop ladder: ~75%, then ~50%, then the floor. Empty when the
+    /// set is already at or below the floor (then only the full set is used).
     private static func frameLadder(_ frames: [Frame]) -> [[Frame]] {
+        let count = frames.count
+        guard count > 2 else { return [] }
+        let floor = min(count, max(minFramesAfterDrop, count / 2))
         var counts = Set<Int>()
-        if frames.count > minUsableFrames { counts.insert(frames.count / 2) }
-        [16, 12, 9].forEach { counts.insert($0) }
-        let floor = min(minUsableFrames, frames.count)
-        let valid = counts.filter { $0 >= floor && $0 < frames.count }.sorted(by: >)
+        counts.insert(Int((Double(count) * 0.75).rounded()))
+        counts.insert(max(floor, Int((Double(count) * 0.5).rounded())))
+        counts.insert(floor)
+        let valid = counts
+            .filter { $0 >= max(2, floor) && $0 < count }
+            .sorted(by: >)
         return valid.map { resample(frames, to: $0) }
     }
 

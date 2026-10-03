@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import AVFoundation
+import AVKit
 import Observation
 
 /// Live playback flag for the preview. A reference type so the running
@@ -193,51 +194,23 @@ struct VideoTrimView: View {
 
     // MARK: - Preview
 
+    /// The system player (`VideoPlayer`) renders and plays reliably; the
+    /// transport row below carries our own play/pause and time readout and
+    /// drives the same retained `AVPlayer`, so looping stays inside the
+    /// selection.
     private var previewArea: some View {
-        GeometryReader { proxy in
-            let available = proxy.size
-            let box = videoBox(in: available)
+        ZStack {
+            Color.black
 
-            ZStack {
-                Color.black
-
-                if let player {
-                    PlayerLayerView(player: player)
-                        .frame(width: box.width, height: box.height)
-                } else {
-                    ProgressView()
-                        .tint(.white)
-                }
+            if let player {
+                VideoPlayer(player: player)
+            } else {
+                ProgressView()
+                    .tint(.white)
             }
-            .frame(width: available.width, height: available.height)
-            .overlay { playButton }
-            .accessibilityElement(children: .contain)
         }
-    }
-
-    /// Largest aspect-fit box for the video inside `available`, so the preview
-    /// always fits the space left for it.
-    private func videoBox(in available: CGSize) -> CGSize {
-        guard available.width > 0, available.height > 0 else { return .zero }
-        guard let aspect = videoAspect, aspect > 0 else { return available }
-        let width = min(available.width, available.height * aspect)
-        return CGSize(width: width, height: width / aspect)
-    }
-
-    private var playButton: some View {
-        Button {
-            togglePlayback()
-        } label: {
-            Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
-                .font(.system(size: 26, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 68, height: 68)
-                .background(.black.opacity(0.4), in: Circle())
-                .overlay(Circle().stroke(.white.opacity(0.5), lineWidth: 1.5))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
-        .accessibilityHint("Plays the video preview")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
     }
 
     /// Compact transport under the preview: play/pause plus the time readout.
@@ -277,7 +250,7 @@ struct VideoTrimView: View {
 
     private var bottomPanel: some View {
         VStack(spacing: 12) {
-            transportRow(showPlay: false)
+            transportRow(showPlay: true)
             selectionReadout
             filmstripView
 
@@ -324,7 +297,7 @@ struct VideoTrimView: View {
                 Color.black
 
                 if let player {
-                    PlayerLayerView(player: player)
+                    VideoPlayer(player: player)
                 } else {
                     ProgressView()
                         .tint(.white)
@@ -470,26 +443,26 @@ struct VideoTrimView: View {
             player.actionAtItemEnd = .pause
             self.player = player
 
-            // Loops reliably: the periodic tick is the primary path, and it also
-            // clamps the marker when the selection moves.
+            // Keeps the marker in sync and reflects playback started by either
+            // control (ours or the system player's). The boundary and end
+            // observers below handle looping precisely.
             timeObserver = player.addPeriodicTimeObserver(
                 forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
                 queue: .main
             ) { time in
                 let seconds = CMTimeGetSeconds(time)
                 guard seconds.isFinite else { return }
-                guard playback.isPlaying else {
+
+                let playing = player.timeControlStatus != .paused
+                if playback.isPlaying != playing { playback.isPlaying = playing }
+
+                guard playing else {
                     playhead = min(max(seconds, lowerBound), upperBound)
                     return
                 }
+                // Fallback loop if playback crosses the selection between ticks.
                 if seconds >= upperBound || seconds < lowerBound {
-                    player.seek(
-                        to: CMTime(seconds: lowerBound, preferredTimescale: 600),
-                        toleranceBefore: .zero,
-                        toleranceAfter: .zero
-                    )
-                    playhead = lowerBound
-                    player.play()
+                    restartPlayback()
                 } else {
                     playhead = seconds
                 }
@@ -497,20 +470,14 @@ struct VideoTrimView: View {
 
             installLoopObserver()
 
-            // Safety net for when the selection reaches the item's own end.
+            // When the selection runs to the item's own end, playback pauses
+            // there; restart so the preview keeps looping.
             endObserver = NotificationCenter.default.addObserver(
                 forName: AVPlayerItem.didPlayToEndTimeNotification,
                 object: player.currentItem,
                 queue: .main
             ) { _ in
-                guard playback.isPlaying else { return }
-                player.seek(
-                    to: CMTime(seconds: lowerBound, preferredTimescale: 600),
-                    toleranceBefore: .zero,
-                    toleranceAfter: .zero
-                )
-                playhead = lowerBound
-                player.play()
+                restartPlayback()
             }
 
             isLoading = false
@@ -552,8 +519,8 @@ struct VideoTrimView: View {
     }
 
     /// Re-arms the loop boundary at the current `upperBound`. The observer seeks
-    /// back to `lowerBound` and keeps playing when playback crosses the end of
-    /// the selection, so the preview never runs past the chosen range.
+    /// back to `lowerBound` and keeps playing whenever playback crosses the end
+    /// of the selection, so the preview never runs past the chosen range.
     private func installLoopObserver() {
         guard let player else { return }
         if let loopObserver {
@@ -562,19 +529,13 @@ struct VideoTrimView: View {
         }
         let boundary = NSValue(time: CMTime(seconds: upperBound, preferredTimescale: 600))
         loopObserver = player.addBoundaryTimeObserver(forTimes: [boundary], queue: .main) {
-            guard playback.isPlaying else { return }
-            player.seek(
-                to: CMTime(seconds: lowerBound, preferredTimescale: 600),
-                toleranceBefore: .zero,
-                toleranceAfter: .zero
-            )
-            playhead = lowerBound
-            player.play()
+            guard player.timeControlStatus != .paused else { return }
+            restartPlayback()
         }
     }
 
-    /// Seeks back to the start of the selection and keeps playing.
-    private func loopToStart() {
+    /// Seeks to the start of the selection and keeps playing.
+    private func restartPlayback() {
         guard let player else { return }
         player.seek(
             to: CMTime(seconds: lowerBound, preferredTimescale: 600),
@@ -582,9 +543,7 @@ struct VideoTrimView: View {
             toleranceAfter: .zero
         )
         playhead = lowerBound
-        if playback.isPlaying {
-            player.play()
-        }
+        player.play()
     }
 
     /// When the selection moves while playing, immediately clamp the playhead
@@ -597,7 +556,7 @@ struct VideoTrimView: View {
         let current = CMTimeGetSeconds(player.currentTime())
         guard current.isFinite else { return }
         if current < lowerBound || current > upperBound {
-            loopToStart()
+            restartPlayback()
         }
     }
 
@@ -752,33 +711,6 @@ struct VideoTrimView: View {
         guard value.isFinite, value >= 0 else { return "0:00" }
         let total = Int(value.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
-    }
-}
-
-/// Bare `AVPlayerLayer` so the preview has no built-in controls — the screen
-/// draws its own play button. Content layer, never glass.
-private struct PlayerLayerView: UIViewRepresentable {
-    let player: AVPlayer
-
-    func makeUIView(context: Context) -> PlayerView {
-        let view = PlayerView()
-        view.backgroundColor = .black
-        view.playerLayer.videoGravity = .resizeAspect
-        view.playerLayer.player = player
-        return view
-    }
-
-    func updateUIView(_ uiView: PlayerView, context: Context) {
-        uiView.playerLayer.player = player
-    }
-
-    final class PlayerView: UIView {
-        override class var layerClass: AnyClass { AVPlayerLayer.self }
-
-        var playerLayer: AVPlayerLayer {
-            // `layerClass` guarantees the backing layer is an `AVPlayerLayer`.
-            layer as! AVPlayerLayer
-        }
     }
 }
 

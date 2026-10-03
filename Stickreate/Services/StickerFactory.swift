@@ -39,7 +39,7 @@ enum StickerFactory {
             guard case .video = source else { throw Failure.unsupported }
             let frames = try await FrameExtractor.frames(
                 fromVideoAt: StickerSourceStore.url(for: source),
-                maxFrames: 30,
+                maxFrames: 240,
                 onProgress: { onStage?(.extracting($0)) }
             )
             return try await makeAnimated(

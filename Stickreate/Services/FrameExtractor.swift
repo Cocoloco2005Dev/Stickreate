@@ -65,7 +65,7 @@ enum FrameExtractor {
     /// `onProgress` is reported on the main queue.
     static func frames(
         fromVideoAt url: URL,
-        maxFrames: Int = 30,
+        maxFrames: Int = 240,
         onProgress: ((Double) -> Void)? = nil
     ) async throws -> [Frame] {
         let duration = try await loadDuration(of: url)
@@ -83,10 +83,10 @@ enum FrameExtractor {
     /// Extracts frames from a trimmed `range` using `AVAssetImageGenerator`
     /// (`appliesPreferredTrackTransform = true`), so frames are always upright.
     ///
-    /// `fps <= 0` selects an automatic rate (targeting ~15 fps, lower for long
-    /// spans) and the count is capped at `maxFrames`. The count is kept at a
-    /// usable minimum of 8 frames whenever the span can afford it (8 × 8 ms),
-    /// never below 2.
+    /// `fps <= 0` selects an automatic rate targeting ~24 fps, capped by
+    /// `maxFrames`. The count is never allowed to collapse: a span of at least
+    /// 1 s keeps ≥ 24 frames, shorter spans keep ≥ 8 (and ≥ 2 for a tiny span),
+    /// so a video never loses its motion.
     ///
     /// Each frame lasts the actual sampling step `span / count`, so the summed
     /// animation duration always equals the trimmed span even when the frame
@@ -97,7 +97,7 @@ enum FrameExtractor {
         fromVideoAt url: URL,
         range: ClosedRange<TimeInterval>,
         fps: Double = 0,
-        maxFrames: Int = 150,
+        maxFrames: Int = 240,
         onProgress: ((Double) -> Void)? = nil
     ) async throws -> [Frame] {
         let lower = max(0, range.lowerBound)
@@ -108,9 +108,17 @@ enum FrameExtractor {
         let cap = max(1, maxFrames)
         let requestedFPS = fps > 0 ? min(max(fps, 1), 30) : automaticFPS(span: span, maxFrames: cap)
         let sampled = max(1, min(cap, Int((span * requestedFPS).rounded())))
-        // Keep a usable frame count (≥ 8) unless the span is too short to give
-        // each frame the 8 ms floor; then the hard floor is 2.
-        let usableFloor = span >= Limits.minFrameDuration * 8 ? 8 : 2
+        // Never collapse to a handful of frames: ≥ 24 for a span of ~1 s or
+        // more, ≥ 8 for shorter spans, and the hard floor of 2 only for a span
+        // too short to give every frame the 8 ms minimum.
+        let usableFloor: Int
+        if span >= 1 {
+            usableFloor = 24
+        } else if span >= Limits.minFrameDuration * 8 {
+            usableFloor = 8
+        } else {
+            usableFloor = 2
+        }
         let count = cap >= 2 ? min(cap, max(usableFloor, sampled)) : sampled
         let step = span / Double(count)
         let frameDuration = max(step, Limits.minFrameDuration)
@@ -151,11 +159,11 @@ enum FrameExtractor {
         return frames
     }
 
-    /// Automatic frame rate: ~15 fps for short clips, lower for long ones so the
-    /// count stays within `maxFrames`. Capped at 30.
+    /// Automatic frame rate: targets ~24 fps, lowered only when `maxFrames`
+    /// can't fit that many frames across the span. Capped at 30.
     private static func automaticFPS(span: TimeInterval, maxFrames: Int) -> Double {
         guard span > 0 else { return 1 }
-        return min(15, max(1, Double(max(1, maxFrames)) / span))
+        return min(24, max(1, Double(max(1, maxFrames)) / span))
     }
 
     /// Delivers progress on the main queue.

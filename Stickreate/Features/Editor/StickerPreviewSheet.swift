@@ -2,22 +2,27 @@ import SwiftUI
 import UIKit
 import SDWebImage
 
-/// Large, near-full-screen preview of one sticker with its actions. Animated
-/// stickers play their WebP; static stickers show their PNG preview.
+/// Large, near-full-screen preview of one sticker. Animated stickers play their
+/// WebP; static stickers show their PNG preview. The action callbacks are
+/// optional: pass none for a read-only preview (e.g. from the export sheet).
 struct StickerPreviewSheet: View {
     let item: StickerItem
-    let isCover: Bool
-    let canDuplicate: Bool
-    let onEdit: () -> Void
-    let onEmojis: () -> Void
-    let onSetCover: () -> Void
-    let onDuplicate: () -> Void
-    let onDelete: () -> Void
+    var isCover: Bool = false
+    var canDuplicate: Bool = false
+    var onEdit: (() -> Void)? = nil
+    var onEmojis: (() -> Void)? = nil
+    var onSetCover: (() -> Void)? = nil
+    var onDuplicate: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
 
     private var staticImage: UIImage? {
         UIImage(data: item.previewData)
+    }
+
+    private var hasActions: Bool {
+        onEdit != nil || onEmojis != nil || onSetCover != nil || onDuplicate != nil || onDelete != nil
     }
 
     var body: some View {
@@ -42,9 +47,14 @@ struct StickerPreviewSheet: View {
                     .accessibilityLabel("Close preview")
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                actions
-            }
+            .safeAreaInset(edge: .bottom) { bottomBar }
+        }
+    }
+
+    @ViewBuilder
+    private var bottomBar: some View {
+        if hasActions {
+            actions
         }
     }
 
@@ -111,37 +121,51 @@ struct StickerPreviewSheet: View {
 
     private var actions: some View {
         HStack(spacing: 10) {
-            actionButton(
-                "Edit",
-                symbol: "pencil",
-                enabled: item.source != nil,
-                action: onEdit
-            )
-            actionButton(
-                "Emojis",
-                symbol: "face.smiling",
-                enabled: true,
-                action: onEmojis
-            )
-            actionButton(
-                "Set as Cover",
-                symbol: "star",
-                enabled: !isCover,
-                action: onSetCover
-            )
-            actionButton(
-                "Duplicate",
-                symbol: "plus.square.on.square",
-                enabled: canDuplicate,
-                action: onDuplicate
-            )
-            actionButton(
-                "Delete",
-                symbol: "trash",
-                enabled: true,
-                destructive: true,
-                action: onDelete
-            )
+            if let onEdit {
+                actionButton(
+                    "Edit",
+                    symbol: "pencil",
+                    enabled: item.source != nil,
+                    action: onEdit
+                )
+            }
+
+            if let onEmojis {
+                actionButton(
+                    "Emojis",
+                    symbol: "face.smiling",
+                    enabled: true,
+                    action: onEmojis
+                )
+            }
+
+            if let onSetCover {
+                actionButton(
+                    "Set as Cover",
+                    symbol: "star",
+                    enabled: !isCover,
+                    action: onSetCover
+                )
+            }
+
+            if let onDuplicate {
+                actionButton(
+                    "Duplicate",
+                    symbol: "plus.square.on.square",
+                    enabled: canDuplicate,
+                    action: onDuplicate
+                )
+            }
+
+            if let onDelete {
+                actionButton(
+                    "Delete",
+                    symbol: "trash",
+                    enabled: true,
+                    destructive: true,
+                    action: onDelete
+                )
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
