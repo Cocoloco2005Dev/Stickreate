@@ -2,11 +2,9 @@ import SwiftUI
 import UIKit
 import AVFoundation
 
-/// Trims a video source, then asks whether to keep or cut the background.
-///
-/// The trim screen is a dark editor: a full-bleed preview with its own play
-/// control, plus a bottom filmstrip whose selection window can be moved or
-/// resized. Frame rate is automatic. "Next" moves to the background choice.
+/// Edits a video source: duration trim, spatial crop, then an explicit
+/// Original / Intelligent Cut choice. The screens are dark editors with a
+/// full-bleed preview and a bottom filmstrip. Frame rate is automatic.
 @MainActor
 struct VideoTrimView: View {
     let source: StickerSource
@@ -16,6 +14,7 @@ struct VideoTrimView: View {
 
     private enum Step: Hashable {
         case trim
+        case crop
         case background
     }
 
@@ -29,6 +28,10 @@ struct VideoTrimView: View {
     @State private var lowerBound: TimeInterval = 0
     @State private var upperBound: TimeInterval = 0
     @State private var playhead: TimeInterval = 0
+    /// Normalized (0...1) top-left crop rect. Defaults to the full frame.
+    @State private var cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+    /// Display aspect (width / height) of the video, for the crop overlay.
+    @State private var videoAspect: CGFloat?
 
     @State private var player: AVPlayer?
     @State private var isPlaying = false
@@ -50,10 +53,33 @@ struct VideoTrimView: View {
 
     private var clipLength: TimeInterval { max(0, upperBound - lowerBound) }
 
+    private var stepTitle: String {
+        switch step {
+        case .trim: "Trim"
+        case .crop: "Crop"
+        case .background: "Background"
+        }
+    }
+
+    private var backLabel: String {
+        switch step {
+        case .trim: "Close"
+        case .crop: "Back to trim"
+        case .background: "Back to crop"
+        }
+    }
+
+    private var hasCrop: Bool {
+        !(cropRect.minX <= 0.001
+            && cropRect.minY <= 0.001
+            && cropRect.width >= 0.999
+            && cropRect.height >= 0.999)
+    }
+
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle(step == .trim ? "Trim" : "Background")
+                .navigationTitle(stepTitle)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { toolbarContent }
         }
@@ -86,16 +112,12 @@ struct VideoTrimView: View {
             }
             .tint(.white)
             .disabled(isCreating)
-            .accessibilityLabel(step == .background ? "Back to trim" : "Back")
+            .accessibilityLabel(backLabel)
         }
 
         ToolbarItem(placement: .confirmationAction) {
-            Button(step == .trim ? "Next" : "Apply") {
-                if step == .trim {
-                    next()
-                } else {
-                    apply()
-                }
+            Button(step == .background ? "Apply" : "Next") {
+                advance()
             }
             .fontWeight(.semibold)
             .tint(.blue)
@@ -112,6 +134,9 @@ struct VideoTrimView: View {
                 switch step {
                 case .trim:
                     trimScreen
+
+                case .crop:
+                    cropScreen
 
                 case .background:
                     BackgroundChoiceView(previewImage: playheadImage, choice: $backgroundChoice)
@@ -184,8 +209,22 @@ struct VideoTrimView: View {
     }
 
     /// Playback scrubber under the preview: shows and sets the current position.
-    private var scrubberRow: some View {
+    private func scrubberRow(showPlay: Bool) -> some View {
         HStack(spacing: 12) {
+            if showPlay {
+                Button {
+                    togglePlayback()
+                } label: {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isPlaying ? "Pause" : "Play")
+            }
+
             Text(timeString(playhead))
                 .font(.caption.monospacedDigit().weight(.semibold))
                 .foregroundStyle(.white)
@@ -225,19 +264,9 @@ struct VideoTrimView: View {
 
     private var bottomPanel: some View {
         VStack(spacing: 12) {
-            scrubberRow
+            scrubberRow(showPlay: false)
             selectionReadout
-
-            FilmstripView(
-                thumbnails: filmstrip,
-                duration: duration,
-                playhead: playhead,
-                minSpan: min(0.2, duration),
-                maxSpan: min(Limits.maxAnimationDuration, duration),
-                lower: $lowerBound,
-                upper: $upperBound,
-                onScrub: { time in scrub(to: time) }
-            )
+            filmstripView
 
             Text("WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so the app compresses automatically.")
                 .font(.caption2)
@@ -248,6 +277,105 @@ struct VideoTrimView: View {
         .padding(.top, 14)
         .padding(.bottom, 10)
         .background(Color.black)
+    }
+
+    private var filmstripView: some View {
+        FilmstripView(
+            thumbnails: filmstrip,
+            duration: duration,
+            playhead: playhead,
+            minSpan: min(0.2, duration),
+            maxSpan: min(Limits.maxAnimationDuration, duration),
+            lower: $lowerBound,
+            upper: $upperBound,
+            onScrub: { time in scrub(to: time) }
+        )
+    }
+
+    // MARK: - Crop screen
+
+    private var cropScreen: some View {
+        VStack(spacing: 0) {
+            cropCanvas
+            cropControls
+        }
+        .background(Color.black.ignoresSafeArea())
+    }
+
+    private var cropCanvas: some View {
+        GeometryReader { proxy in
+            let canvas = proxy.size
+            let frame = mediaFrame(in: canvas)
+
+            ZStack {
+                Color.black
+
+                if let player {
+                    PlayerLayerView(player: player)
+                } else {
+                    ProgressView()
+                        .tint(.white)
+                }
+
+                if frame.width > 0 {
+                    CropOverlay(cropRect: $cropRect, frameRect: frame)
+                }
+            }
+            .frame(width: canvas.width, height: canvas.height)
+        }
+    }
+
+    private var cropControls: some View {
+        VStack(spacing: 12) {
+            scrubberRow(showPlay: true)
+
+            HStack(spacing: 12) {
+                Text("Drag to frame the crop. It applies to every frame.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button("Reset") {
+                    resetCrop()
+                }
+                .buttonStyle(.glass)
+                .disabled(!hasCrop)
+                .accessibilityLabel("Reset crop")
+            }
+
+            filmstripView
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+        .background(Color.black)
+    }
+
+    /// Where the letterboxed video is drawn inside the crop canvas.
+    private func mediaFrame(in canvas: CGSize) -> CGRect {
+        guard canvas.width > 0, canvas.height > 0 else { return .zero }
+        let aspect = max(videoAspect ?? 1, 0.01)
+
+        let mediaWidth: CGFloat
+        let mediaHeight: CGFloat
+        if canvas.width / canvas.height > aspect {
+            mediaHeight = canvas.height
+            mediaWidth = mediaHeight * aspect
+        } else {
+            mediaWidth = canvas.width
+            mediaHeight = mediaWidth / aspect
+        }
+
+        return CGRect(
+            x: (canvas.width - mediaWidth) / 2,
+            y: (canvas.height - mediaHeight) / 2,
+            width: mediaWidth,
+            height: mediaHeight
+        )
+    }
+
+    private func resetCrop() {
+        cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
     }
 
     private var selectionReadout: some View {
@@ -321,6 +449,9 @@ struct VideoTrimView: View {
             lowerBound = 0
             upperBound = min(loaded.duration, Limits.maxAnimationDuration)
             playhead = lowerBound
+            if let size = await videoDisplaySize() {
+                videoAspect = size.width / max(size.height, 1)
+            }
 
             let player = AVPlayer(url: sourceURL)
             player.actionAtItemEnd = .pause
@@ -378,8 +509,25 @@ struct VideoTrimView: View {
                 }
                 frames.append(image)
                 filmstrip = frames
+                // Fallback aspect for the crop overlay if the track load failed.
+                if videoAspect == nil {
+                    videoAspect = image.size.width / max(image.size.height, 1)
+                }
             }
         }
+    }
+
+    /// Display size of the video, accounting for the preferred transform.
+    private func videoDisplaySize() async -> CGSize? {
+        let asset = AVURLAsset(url: sourceURL)
+        guard let tracks = try? await asset.loadTracks(withMediaType: .video),
+              let track = tracks.first,
+              let natural = try? await track.load(.naturalSize),
+              let transform = try? await track.load(.preferredTransform) else {
+            return nil
+        }
+        let transformed = natural.applying(transform)
+        return CGSize(width: abs(transformed.width), height: abs(transformed.height))
     }
 
     // MARK: - Playback / scrubbing
@@ -431,16 +579,26 @@ struct VideoTrimView: View {
     // MARK: - Actions
 
     private func goBack() {
-        if step == .background {
-            step = .trim
-        } else {
+        switch step {
+        case .trim:
             dismiss()
+        case .crop:
+            step = .trim
+        case .background:
+            step = .crop
         }
     }
 
-    private func next() {
-        prepareBackgroundPreview()
-        step = .background
+    private func advance() {
+        switch step {
+        case .trim:
+            step = .crop
+        case .crop:
+            prepareBackgroundPreview()
+            step = .background
+        case .background:
+            apply()
+        }
     }
 
     @MainActor
@@ -460,6 +618,7 @@ struct VideoTrimView: View {
                     range: range,
                     fps: 0,                     // automatic frame rate
                     removeBackground: removeBackground,
+                    cropRect: hasCrop ? cropRect : nil,
                     source: source,
                     onStage: { newStage in
                         // Stage callbacks can arrive off the main actor.
@@ -513,6 +672,152 @@ private struct PlayerLayerView: UIViewRepresentable {
             // `layerClass` guarantees the backing layer is an `AVPlayerLayer`.
             layer as! AVPlayerLayer
         }
+    }
+}
+
+/// Draggable, resizable crop rectangle drawn over the letterboxed video.
+/// Dimmed outside, white border, large corner handles. Content layer.
+private struct CropOverlay: View {
+    /// Normalized (0...1) top-left crop rect.
+    @Binding var cropRect: CGRect
+    /// Where the video is drawn, in the parent's coordinate space.
+    let frameRect: CGRect
+
+    @State private var isDragging = false
+    @State private var activeHandle: Handle?
+    @State private var initialRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+
+    private enum Handle: Hashable {
+        case move
+        case topLeft
+        case topRight
+        case bottomLeft
+        case bottomRight
+    }
+
+    private let minSize: CGFloat = 0.1
+    private let grab: CGFloat = 28
+
+    var body: some View {
+        let rect = canvasRect()
+        let corners = [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.minX, y: rect.maxY),
+            CGPoint(x: rect.maxX, y: rect.maxY)
+        ]
+
+        ZStack {
+            // Dim the video outside the crop window.
+            Path { path in
+                path.addRect(frameRect)
+                path.addRect(rect)
+            }
+            .fill(Color.black.opacity(0.55), style: FillStyle(eoFill: true))
+            .allowsHitTesting(false)
+
+            Rectangle()
+                .stroke(Color.white, lineWidth: 2)
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+                .allowsHitTesting(false)
+
+            ForEach(corners, id: \.self) { point in
+                // Visible 36 pt, 56 pt touch target via `grab` below.
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 36, height: 36)
+                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 3))
+                    .shadow(radius: 1)
+                    .position(point)
+                    .allowsHitTesting(false)
+            }
+        }
+        .contentShape(Rectangle())
+        .gesture(dragGesture(rect: rect))
+        .accessibilityElement()
+        .accessibilityLabel("Crop area")
+        .accessibilityValue(Text(accessibilityValue))
+        .accessibilityHint("Drag to move, or the corners to resize")
+    }
+
+    private func dragGesture(rect: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if !isDragging {
+                    isDragging = true
+                    initialRect = cropRect
+                    activeHandle = handle(at: value.startLocation, rect: rect)
+                }
+                guard let handle = activeHandle else { return }
+                cropRect = updatedRect(
+                    handle: handle,
+                    dx: value.translation.width / max(frameRect.width, 1),
+                    dy: value.translation.height / max(frameRect.height, 1)
+                )
+            }
+            .onEnded { _ in
+                isDragging = false
+                activeHandle = nil
+            }
+    }
+
+    private func handle(at point: CGPoint, rect: CGRect) -> Handle? {
+        if near(point, CGPoint(x: rect.minX, y: rect.minY)) { return .topLeft }
+        if near(point, CGPoint(x: rect.maxX, y: rect.minY)) { return .topRight }
+        if near(point, CGPoint(x: rect.minX, y: rect.maxY)) { return .bottomLeft }
+        if near(point, CGPoint(x: rect.maxX, y: rect.maxY)) { return .bottomRight }
+        return rect.contains(point) ? .move : nil
+    }
+
+    private func near(_ point: CGPoint, _ corner: CGPoint) -> Bool {
+        let dx = point.x - corner.x
+        let dy = point.y - corner.y
+        return (dx * dx + dy * dy).squareRoot() <= grab
+    }
+
+    private func updatedRect(handle: Handle, dx: CGFloat, dy: CGFloat) -> CGRect {
+        switch handle {
+        case .move:
+            let x = min(max(0, initialRect.minX + dx), 1 - initialRect.width)
+            let y = min(max(0, initialRect.minY + dy), 1 - initialRect.height)
+            return CGRect(x: x, y: y, width: initialRect.width, height: initialRect.height)
+
+        case .topLeft:
+            let x = min(max(0, initialRect.minX + dx), initialRect.maxX - minSize)
+            let y = min(max(0, initialRect.minY + dy), initialRect.maxY - minSize)
+            return CGRect(x: x, y: y, width: initialRect.maxX - x, height: initialRect.maxY - y)
+
+        case .topRight:
+            let maxX = max(min(1, initialRect.maxX + dx), initialRect.minX + minSize)
+            let y = min(max(0, initialRect.minY + dy), initialRect.maxY - minSize)
+            return CGRect(x: initialRect.minX, y: y, width: maxX - initialRect.minX, height: initialRect.maxY - y)
+
+        case .bottomLeft:
+            let x = min(max(0, initialRect.minX + dx), initialRect.maxX - minSize)
+            let maxY = max(min(1, initialRect.maxY + dy), initialRect.minY + minSize)
+            return CGRect(x: x, y: initialRect.minY, width: initialRect.maxX - x, height: maxY - initialRect.minY)
+
+        case .bottomRight:
+            let maxX = max(min(1, initialRect.maxX + dx), initialRect.minX + minSize)
+            let maxY = max(min(1, initialRect.maxY + dy), initialRect.minY + minSize)
+            return CGRect(x: initialRect.minX, y: initialRect.minY, width: maxX - initialRect.minX, height: maxY - initialRect.minY)
+        }
+    }
+
+    private func canvasRect() -> CGRect {
+        CGRect(
+            x: frameRect.minX + cropRect.minX * frameRect.width,
+            y: frameRect.minY + cropRect.minY * frameRect.height,
+            width: cropRect.width * frameRect.width,
+            height: cropRect.height * frameRect.height
+        )
+    }
+
+    private var accessibilityValue: String {
+        let width = Int((cropRect.width * 100).rounded())
+        let height = Int((cropRect.height * 100).rounded())
+        return "\(width) percent wide, \(height) percent tall"
     }
 }
 
