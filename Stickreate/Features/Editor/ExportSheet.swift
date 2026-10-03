@@ -1,9 +1,11 @@
 import SwiftUI
 import UIKit
 
-/// Confirms and exports a finished pack. WhatsApp mode adds the pack's single
-/// kind; packs can't mix photos and videos, so a mixed pack is blocked with an
-/// explanation. File mode shares a `.stickreatepack`.
+/// Confirms the WhatsApp sticker import for a pack. Shows every sticker so the
+/// user can check the pack before handing it to WhatsApp (WhatsApp opens its own
+/// pack preview). Packs can't mix photos and videos, so a mixed pack is blocked
+/// with an explanation — use "Export Pack File…" from the pack menu to back it
+/// up instead.
 ///
 /// Reads the pack live from the store by id, so it never shows a stale snapshot.
 struct ExportSheet: View {
@@ -12,17 +14,10 @@ struct ExportSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var settings = SettingsStore.shared
     @State private var isExported = false
     @State private var errorMessage: String?
-    @State private var shareItem: ShareItem?
     @State private var previewItem: StickerItem?
     @State private var detent: PresentationDetent = .large
-
-    private struct ShareItem: Identifiable {
-        let id = UUID()
-        let url: URL
-    }
 
     private var pack: StickerPack? { store.pack(with: packID) }
 
@@ -42,17 +37,12 @@ struct ExportSheet: View {
                     }
                 }
             }
-            .navigationTitle(settings.exportMode == .file ? "Export Pack" : "Add to WhatsApp")
+            .navigationTitle("Add to WhatsApp")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-            }
-        }
-        .sheet(item: $shareItem) { item in
-            ActivityView(url: item.url) {
-                shareItem = nil
             }
         }
         .sheet(item: $previewItem) { item in
@@ -145,41 +135,10 @@ struct ExportSheet: View {
     @MainActor
     @ViewBuilder
     private func actions(_ pack: StickerPack) -> some View {
-        if settings.exportMode == .file {
-            fileActions(pack)
-        } else if pack.isMixed {
+        if pack.isMixed {
             mixedNotice
         } else {
             singleAction(pack)
-        }
-    }
-
-    @MainActor
-    private func fileActions(_ pack: StickerPack) -> some View {
-        VStack(spacing: 12) {
-            Button {
-                shareFile(pack)
-            } label: {
-                Label("Share Pack File", systemImage: "square.and.arrow.up")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-            }
-            .buttonStyle(.glassProminent)
-
-            Text("Shares a .stickreatepack. Anyone with Stickreate can import it later.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-    }
-
-    @MainActor
-    private func shareFile(_ pack: StickerPack) {
-        do {
-            let url = try PackArchive.writeTemporaryFile(pack)
-            shareItem = ShareItem(url: url)
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -189,7 +148,7 @@ struct ExportSheet: View {
             Label("This pack mixes photos and videos", systemImage: "exclamationmark.triangle")
                 .font(.subheadline.weight(.semibold))
 
-            Text("WhatsApp imports one kind per pack. Remove the stickers that don't belong, or share it as a file instead.")
+            Text("WhatsApp imports one kind per pack. Remove the stickers that don't belong, or use Export Pack File from the pack menu to back it up.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

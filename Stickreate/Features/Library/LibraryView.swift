@@ -333,14 +333,22 @@ struct LibraryView: View {
             folderTarget = pack
         }
 
-        Button("Share Pack…", systemImage: "square.and.arrow.up") {
-            share(pack)
-        }
-
-        Button(exportMenuTitle, systemImage: exportMenuSymbol) {
+        // Primary: WhatsApp sticker import (opens WhatsApp's pack preview).
+        // Secondary: a `.stickreatepack` data file for backup/transfer.
+        Button("Add to WhatsApp…", systemImage: "plus.message") {
             exportTarget = pack
         }
         .disabled(!canExport(pack))
+        .accessibilityHint(canExport(pack) ? "Opens the WhatsApp sticker import" : exportReason(pack))
+
+        if !canExport(pack) {
+            Button(exportReason(pack), systemImage: "info.circle") {}
+                .disabled(true)
+        }
+
+        Button("Export Pack File…", systemImage: "square.and.arrow.up") {
+            exportFile(pack)
+        }
 
         Divider()
 
@@ -354,15 +362,18 @@ struct LibraryView: View {
         !pack.isMixed && pack.stickers.count >= Limits.minStickers
     }
 
-    private var exportMenuTitle: String {
-        settings.exportMode == .file ? "Export Pack…" : "Add to WhatsApp…"
+    /// Why the WhatsApp import is unavailable, shown in the pack menu.
+    private func exportReason(_ pack: StickerPack) -> String {
+        if pack.isMixed {
+            return "This pack mixes photos and videos."
+        }
+        let needed = max(0, Limits.minStickers - pack.stickers.count)
+        return needed == 1 ? "Add 1 more sticker." : "Add \(needed) more stickers."
     }
 
-    private var exportMenuSymbol: String {
-        settings.exportMode == .file ? "square.and.arrow.up" : "plus.message"
-    }
-
-    private func share(_ pack: StickerPack) {
+    /// Writes a `.stickreatepack` and opens the share sheet. This is the data
+    /// backup/transfer path; the WhatsApp import is the primary action.
+    private func exportFile(_ pack: StickerPack) {
         do {
             let url = try PackArchive.writeTemporaryFile(pack)
             shareItem = ShareItem(url: url)

@@ -9,7 +9,6 @@ struct PackEditorView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var settings = SettingsStore.shared
     @State private var showingAdd = false
     @State private var showingExport = false
     @State private var activeAlert: ActiveAlert?
@@ -242,13 +241,13 @@ struct PackEditorView: View {
             Button {
                 showingExport = true
             } label: {
-                Label(exportTitle, systemImage: exportSymbol)
+                Label("Add to WhatsApp", systemImage: "plus.message")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 4)
             }
             .buttonStyle(.glassProminent)
-            .tint(settings.exportMode == .file ? Color.accentColor : .green)
-            .accessibilityHint("Opens the export options")
+            .tint(.green)
+            .accessibilityHint("Opens the WhatsApp sticker import")
         } else {
             Label(exportHint(for: pack), systemImage: "info.circle")
                 .font(.footnote)
@@ -256,14 +255,6 @@ struct PackEditorView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel(exportHint(for: pack))
         }
-    }
-
-    private var exportTitle: String {
-        settings.exportMode == .file ? "Export Pack" : "Add to WhatsApp"
-    }
-
-    private var exportSymbol: String {
-        settings.exportMode == .file ? "square.and.arrow.up" : "plus.message"
     }
 
     private func exportHint(for pack: StickerPack) -> String {
@@ -376,13 +367,17 @@ struct PackEditorView: View {
                 Button("Folder…", systemImage: "folder") {
                     showingFolder = true
                 }
-                Button("Share Pack…", systemImage: "square.and.arrow.up") {
-                    sharePack()
-                }
-                Button("Export…", systemImage: "plus.message") {
+
+                // Primary: WhatsApp sticker import (opens WhatsApp's pack
+                // preview). Secondary: a `.stickreatepack` data file for backup.
+                Button("Add to WhatsApp…", systemImage: "plus.message") {
                     showingExport = true
                 }
                 .disabled(!canExport)
+
+                Button("Export Pack File…", systemImage: "square.and.arrow.up") {
+                    exportFile()
+                }
 
                 Divider()
 
@@ -461,7 +456,9 @@ struct PackEditorView: View {
         dismiss()
     }
 
-    private func sharePack() {
+    /// Writes a `.stickreatepack` and opens the share sheet. This is the data
+    /// backup/transfer path; the WhatsApp import is the primary action.
+    private func exportFile() {
         guard let pack else { return }
         do {
             let url = try PackArchive.writeTemporaryFile(pack)
