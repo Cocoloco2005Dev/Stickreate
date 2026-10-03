@@ -163,9 +163,11 @@ final class SubjectLiftModel {
     @MainActor
     func lift() async throws -> UIImage? {
         guard let interaction else { return nil }
-        let chosen = interaction.highlightedSubjects.isEmpty
-            ? interaction.subjects
-            : interaction.highlightedSubjects
+        let chosen = await MainActor.run {
+            interaction.highlightedSubjects.isEmpty
+                ? interaction.subjects
+                : interaction.highlightedSubjects
+        }
         guard !chosen.isEmpty else { return nil }
         return try await interaction.image(for: chosen)
     }
@@ -235,7 +237,7 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
                 // resolves or we time out (~12s).
                 for _ in 0..<24 {
                     if Task.isCancelled { return }
-                    let count = interaction.subjects.count
+                    let count = await MainActor.run { interaction.subjects.count }
                     if count > 0 {
                         model.subjectCount = count
                         model.isAnalyzing = false
@@ -243,7 +245,7 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
                     }
                     try? await Task.sleep(for: .seconds(0.5))
                 }
-                model.subjectCount = interaction.subjects.count
+                model.subjectCount = await MainActor.run { interaction.subjects.count }
                 model.isAnalyzing = false
             }
         }
@@ -267,17 +269,17 @@ enum SubjectCutoutMask {
         guard width > 0, height > 0 else { return nil }
 
         var bytes = [UInt8](repeating: 0, count: width * height)
-        let created: Bool = bytes.withUnsafeMutableBytes { buffer in
-            // Alpha-only context: drawing the cut-out leaves the source alpha.
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        let created: Bool = rgba.withUnsafeMutableBytes { buffer in
             guard let base = buffer.baseAddress,
                   let context = CGContext(
                       data: base,
                       width: width,
                       height: height,
                       bitsPerComponent: 8,
-                      bytesPerRow: width,
-                      space: nil,
-                      bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue
+                      bytesPerRow: width * 4,
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
                   ) else { return false }
             context.translateBy(x: 0, y: CGFloat(height))
             context.scaleBy(x: 1, y: -1)
@@ -287,8 +289,9 @@ enum SubjectCutoutMask {
         }
         guard created else { return nil }
 
-        for index in bytes.indices {
-            bytes[index] = bytes[index] >= 128 ? 255 : 0
+        // Read the alpha channel (every 4th byte) into the grayscale keep mask.
+        for index in 0..<(width * height) {
+            bytes[index] = rgba[index * 4 + 3] >= 128 ? 255 : 0
         }
 
         guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
