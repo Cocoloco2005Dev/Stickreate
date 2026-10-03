@@ -313,7 +313,7 @@ struct VideoTrimView: View {
             }
 
             isLoading = false
-            player.seek(
+            _ = await player.seek(
                 to: CMTime(seconds: lowerBound, preferredTimescale: 600),
                 toleranceBefore: .zero,
                 toleranceAfter: .zero
