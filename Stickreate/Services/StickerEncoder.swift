@@ -155,7 +155,7 @@ enum StickerEncoder {
         method: Int,
         pass: Int
     ) -> Data? {
-        let options: SDImageCoderOptions = [
+        let options: [SDImageCoderOption: Any] = [
             .encodeCompressionQuality: quality,
             .encodeWebPMethod: method,
             .encodeWebPPass: pass,
