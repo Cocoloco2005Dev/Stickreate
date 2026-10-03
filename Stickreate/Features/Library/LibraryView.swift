@@ -12,10 +12,15 @@ struct LibraryView: View {
     @State private var searchText = ""
     @State private var folderFilter: FolderFilter = .all
     @State private var showingImporter = false
-    @State private var importError: String?
     @State private var showingMediaImporter = false
     @State private var importedMedia: ImportedMedia?
     @State private var isImportingMedia = false
+
+    @State private var activeAlert: ActiveAlert?
+    @State private var renameName = ""
+    @State private var folderTarget: StickerPack?
+    @State private var exportTarget: StickerPack?
+    @State private var shareItem: ShareItem?
 
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
 
@@ -23,6 +28,20 @@ struct LibraryView: View {
     private struct ImportedMedia: Identifiable {
         let id = UUID()
         let source: StickerSource
+    }
+
+    /// One alert channel so manage actions and errors never fight, and always
+    /// anchor to the screen.
+    private enum ActiveAlert {
+        case importFailed(String)
+        case error(String)
+        case rename(StickerPack)
+        case deletePack(StickerPack)
+    }
+
+    private struct ShareItem: Identifiable {
+        let id = UUID()
+        let url: URL
     }
 
     private enum FolderFilter: Hashable {
@@ -74,6 +93,17 @@ struct LibraryView: View {
                     importedMedia = nil
                 }
             }
+            .sheet(item: $folderTarget) { pack in
+                FolderPickerSheet(currentFolder: pack.folder, folders: store.folders) { folder in
+                    store.setFolder(folder, for: pack.id)
+                }
+            }
+            .sheet(item: $exportTarget) { pack in
+                ExportSheet(pack: pack)
+            }
+            .sheet(item: $shareItem) { item in
+                ActivityView(url: item.url) { shareItem = nil }
+            }
             .overlay {
                 if isImportingMedia {
                     ProgressView("Importing…")
@@ -82,16 +112,10 @@ struct LibraryView: View {
                         .background(.ultraThinMaterial)
                 }
             }
-            .alert(
-                "Import failed",
-                isPresented: Binding(
-                    get: { importError != nil },
-                    set: { if !$0 { importError = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) { importError = nil }
+            .alert(alertTitle, isPresented: alertIsPresented) {
+                alertActions
             } message: {
-                Text(importError ?? "")
+                alertMessage
             }
         }
     }
@@ -254,6 +278,9 @@ struct LibraryView: View {
                                     PackCard(pack: pack)
                                 }
                                 .buttonStyle(.plain)
+                                .contextMenu {
+                                    packMenu(for: pack)
+                                }
                             }
                         }
                     }
@@ -297,6 +324,119 @@ struct LibraryView: View {
         }
     }
 
+    // MARK: - Manage from the library
+
+    @ViewBuilder
+    private func packMenu(for pack: StickerPack) -> some View {
+        Button("Rename…", systemImage: "pencil") {
+            renameName = pack.name
+            activeAlert = .rename(pack)
+        }
+
+        Button("Folder…", systemImage: "folder") {
+            folderTarget = pack
+        }
+
+        Button("Share Pack…", systemImage: "square.and.arrow.up") {
+            share(pack)
+        }
+
+        Button(exportMenuTitle, systemImage: exportMenuSymbol) {
+            exportTarget = pack
+        }
+        .disabled(!canExport(pack))
+
+        Divider()
+
+        Button("Delete…", systemImage: "trash", role: .destructive) {
+            activeAlert = .deletePack(pack)
+        }
+    }
+
+    private func canExport(_ pack: StickerPack) -> Bool {
+        if pack.isMixed {
+            return pack.staticStickers.count >= Limits.minStickers
+                || pack.animatedStickers.count >= Limits.minStickers
+        }
+        return pack.stickers.count >= Limits.minStickers
+    }
+
+    private var exportMenuTitle: String {
+        settings.exportMode == .file ? "Export Pack…" : "Add to WhatsApp…"
+    }
+
+    private var exportMenuSymbol: String {
+        settings.exportMode == .file ? "square.and.arrow.up" : "plus.message"
+    }
+
+    private func share(_ pack: StickerPack) {
+        do {
+            let url = try PackArchive.writeTemporaryFile(pack)
+            shareItem = ShareItem(url: url)
+        } catch {
+            activeAlert = .error(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Alert
+
+    private var alertIsPresented: Binding<Bool> {
+        Binding(
+            get: { activeAlert != nil },
+            set: { if !$0 { activeAlert = nil } }
+        )
+    }
+
+    private var alertTitle: String {
+        switch activeAlert {
+        case .importFailed: "Import failed"
+        case .error: "Something went wrong"
+        case .rename: "Rename Pack"
+        case .deletePack: "Delete this pack?"
+        case nil: ""
+        }
+    }
+
+    @ViewBuilder
+    private var alertActions: some View {
+        switch activeAlert {
+        case .importFailed, .error:
+            Button("OK", role: .cancel) {}
+        case .rename:
+            TextField("Pack name", text: $renameName)
+            Button("Save") { saveRename() }
+            Button("Cancel", role: .cancel) {}
+        case .deletePack(let pack):
+            Button("Delete Pack", role: .destructive) {
+                store.removePack(pack.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        case nil:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var alertMessage: some View {
+        switch activeAlert {
+        case .importFailed(let message), .error(let message):
+            Text(message)
+        case .rename:
+            Text("Give this pack a name.")
+        case .deletePack:
+            Text("This removes the pack and all its stickers. You can't undo this.")
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func saveRename() {
+        guard case .rename(let pack) = activeAlert else { return }
+        let trimmed = renameName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        store.rename(pack.id, to: trimmed)
+    }
+
     // MARK: - Actions
 
     private func createPack() {
@@ -316,11 +456,11 @@ struct LibraryView: View {
                 let pack = try PackArchive.importPack(from: data)
                 store.importPack(pack)
             } catch {
-                importError = error.localizedDescription
+                activeAlert = .importFailed(error.localizedDescription)
             }
 
         case .failure(let error):
-            importError = error.localizedDescription
+            activeAlert = .importFailed(error.localizedDescription)
         }
     }
 
@@ -333,7 +473,7 @@ struct LibraryView: View {
             guard let url = urls.first else { return }
             Task { await importMediaFile(url) }
         case .failure(let error):
-            importError = error.localizedDescription
+            activeAlert = .importFailed(error.localizedDescription)
         }
     }
 
@@ -346,8 +486,9 @@ struct LibraryView: View {
             let source = try await StickerSourceStore.importFile(at: url)
             importedMedia = ImportedMedia(source: source)
         } catch {
-            importError = (error as? LocalizedError)?.errorDescription
-                ?? error.localizedDescription
+            activeAlert = .importFailed(
+                (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            )
         }
     }
 }

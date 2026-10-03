@@ -51,37 +51,41 @@ struct StickerPreviewSheet: View {
     // MARK: - Preview
 
     private var preview: some View {
-        ZStack {
-            CheckerboardBackground()
+        GeometryReader { proxy in
+            let side = max(1, min(proxy.size.width, proxy.size.height))
 
-            if item.kind == .animated {
-                AnimatedStickerView(data: item.stickerData, fallback: staticImage)
-            } else if let staticImage {
-                Image(uiImage: staticImage)
-                    .resizable()
-                    .scaledToFit()
-            } else {
-                Image(systemName: "photo")
-                    .font(.largeTitle)
-                    .foregroundStyle(.secondary)
+            ZStack {
+                CheckerboardBackground()
+
+                if item.kind == .animated {
+                    AnimatedStickerView(data: item.stickerData, fallback: staticImage)
+                } else if let staticImage {
+                    Image(uiImage: staticImage)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    Image(systemName: "photo")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                }
             }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(alignment: .topTrailing) {
-            if item.kind == .animated {
-                Image(systemName: "play.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .padding(6)
-                    .background(.black.opacity(0.45), in: Circle())
-                    .padding(12)
-                    .accessibilityHidden(true)
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(alignment: .topTrailing) {
+                if item.kind == .animated {
+                    Image(systemName: "play.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(6)
+                        .background(.black.opacity(0.45), in: Circle())
+                        .padding(12)
+                        .accessibilityHidden(true)
+                }
             }
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(item.kind == .animated ? "Animated sticker preview" : "Sticker preview")
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(item.kind == .animated ? "Animated sticker preview" : "Sticker preview")
     }
 
     private var details: some View {

@@ -1,8 +1,6 @@
 import UIKit
 import AVFoundation
 import ImageIO
-import CoreImage
-import CoreVideo
 
 /// Turns videos and GIFs into sticker frames.
 enum FrameExtractor {
@@ -29,31 +27,37 @@ enum FrameExtractor {
     /// canvas, so frames are never decoded larger than the encoder needs.
     private static let frameMaxDimension: CGFloat = CGFloat(Limits.canvas)
 
-    /// Shared Core Image context for converting composed pixel buffers to images.
-    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-
     /// Loads a video's duration without extracting any frames.
     static func videoDraft(from url: URL) async throws -> VideoDraft {
         let duration = try await loadDuration(of: url)
         return VideoDraft(url: url, duration: duration)
     }
 
-    /// A single still at `time`, with the preferred track transform applied.
-    /// Decoded off the main thread; the decode runs in its own autorelease pool.
+    /// A single still at `time`, with the preferred track transform applied by
+    /// `AVAssetImageGenerator`. Decoded off the main thread.
     static func thumbnail(fromVideoAt url: URL, at time: TimeInterval) async throws -> UIImage? {
         let cmTime = CMTime(seconds: max(0, time), preferredTimescale: 600)
         let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
-            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: frameMaxDimension, height: frameMaxDimension)
-            generator.requestedTimeToleranceBefore = frameTolerance
-            generator.requestedTimeToleranceAfter = frameTolerance
-            return autoreleasepool {
-                guard let cgImage = try? generator.copyCGImage(at: cmTime, actualTime: nil) else { return nil }
-                return UIImage(cgImage: cgImage)
-            }
+            let generator = makeGenerator(for: url)
+            guard let result = try? await generator.image(at: cmTime) else { return nil }
+            return autoreleasepool { UIImage(cgImage: result.image) }
         }
         return await task.value
+    }
+
+    /// A generator configured to apply the preferred track transform (so frames
+    /// are upright) and to decode no larger than the 512 px canvas.
+    ///
+    /// This is Apple's canonical path for stills from video; the custom
+    /// `AVAssetReaderVideoCompositionOutput` approach was removed because it
+    /// produced upside-down frames.
+    private static func makeGenerator(for url: URL) -> AVAssetImageGenerator {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: frameMaxDimension, height: frameMaxDimension)
+        generator.requestedTimeToleranceBefore = frameTolerance
+        generator.requestedTimeToleranceAfter = frameTolerance
+        return generator
     }
 
     /// Extracts evenly-spaced frames from the first 10 s of a video, capped at
@@ -76,17 +80,17 @@ enum FrameExtractor {
         )
     }
 
-    /// Extracts frames from a trimmed `range`.
+    /// Extracts frames from a trimmed `range` using `AVAssetImageGenerator`
+    /// (`appliesPreferredTrackTransform = true`), so frames are always upright.
     ///
-    /// `fps <= 0` selects an automatic rate that fills `maxFrames` across the
-    /// span (30 fps for short clips, lower for long ones). `fps` is otherwise
-    /// clamped to 1...30.
+    /// `fps <= 0` selects an automatic rate (targeting ~15 fps, lower for long
+    /// spans) and the count is capped at `maxFrames`. The count is kept at a
+    /// usable minimum of 8 frames whenever the span can afford it (8 × 8 ms),
+    /// never below 2.
     ///
     /// Each frame lasts the actual sampling step `span / count`, so the summed
     /// animation duration always equals the trimmed span even when the frame
-    /// count is capped at `maxFrames`. Durations never fall below
-    /// `Limits.minFrameDuration`, and at least two frames are emitted for any
-    /// positive span so a valid animated payload is always possible.
+    /// count is capped. Durations never fall below `Limits.minFrameDuration`.
     ///
     /// `onProgress` is reported on the main queue as each frame is decoded.
     static func frames(
@@ -104,8 +108,10 @@ enum FrameExtractor {
         let cap = max(1, maxFrames)
         let requestedFPS = fps > 0 ? min(max(fps, 1), 30) : automaticFPS(span: span, maxFrames: cap)
         let sampled = max(1, min(cap, Int((span * requestedFPS).rounded())))
-        // Two frames minimum so the encoder always has a valid animation.
-        let count = cap >= 2 ? max(2, sampled) : sampled
+        // Keep a usable frame count (≥ 8) unless the span is too short to give
+        // each frame the 8 ms floor; then the hard floor is 2.
+        let usableFloor = span >= Limits.minFrameDuration * 8 ? 8 : 2
+        let count = cap >= 2 ? min(cap, max(usableFloor, sampled)) : sampled
         let step = span / Double(count)
         let frameDuration = max(step, Limits.minFrameDuration)
 
@@ -116,19 +122,7 @@ enum FrameExtractor {
         let started = CFAbsoluteTimeGetCurrent()
         #endif
         let task = Task.detached(priority: .userInitiated) {
-            // Preferred: one sequential AVAssetReader pass through a video
-            // composition (applies preferredTransform, so frames are upright).
-            // Falls back to AVAssetImageGenerator if it can't be configured or
-            // yields no frames — that path also applies the transform.
-            if let sequential = try? await decodeFramesSequentially(
-                url: url,
-                times: times,
-                frameDuration: frameDuration,
-                onProgress: onProgress
-            ), !sequential.isEmpty {
-                return sequential
-            }
-            return try decodeFrames(
+            try await decodeFrames(
                 url: url,
                 times: times,
                 frameDuration: frameDuration,
@@ -137,8 +131,8 @@ enum FrameExtractor {
         }
         var frames = try await task.value
 
-        // If a decoder dropped trailing targets (end-of-clip gap), repeat the
-        // last frame so the summed duration still equals the span.
+        // If a decode failed for trailing targets, repeat the last frame so the
+        // summed duration still equals the span.
         if frames.count < count, let last = frames.last {
             while frames.count < count {
                 frames.append(Frame(image: last.image, duration: frameDuration))
@@ -157,129 +151,11 @@ enum FrameExtractor {
         return frames
     }
 
-    /// Automatic frame rate that fills `maxFrames` across `span`, capped at 30.
+    /// Automatic frame rate: ~15 fps for short clips, lower for long ones so the
+    /// count stays within `maxFrames`. Capped at 30.
     private static func automaticFPS(span: TimeInterval, maxFrames: Int) -> Double {
         guard span > 0 else { return 1 }
-        return min(30, max(1, Double(max(1, maxFrames)) / span))
-    }
-
-    /// Decodes `times` in a single sequential pass, keeping output at or below
-    /// the 512 px canvas. One pass, no random seeks.
-    ///
-    /// Orientation: the reader runs through an `AVAssetReaderVideoCompositionOutput`
-    /// whose composition is built with `AVMutableVideoComposition(propertiesOf:)`.
-    /// That composition carries a layer instruction per track that applies the
-    /// track's `preferredTransform`, so rotated/mirrored sources come out upright.
-    /// Decoding raw `AVAssetReaderTrackOutput` buffers and re-applying
-    /// `preferredTransform` by hand is what previously produced upside-down
-    /// frames. If the composition can't be configured this throws and the caller
-    /// falls back to `AVAssetImageGenerator`, which also applies the transform.
-    private static func decodeFramesSequentially(
-        url: URL,
-        times: [CMTime],
-        frameDuration: TimeInterval,
-        onProgress: ((Double) -> Void)?
-    ) async throws -> [Frame] {
-        guard let firstTime = times.first, let lastTime = times.last else {
-            throw Failure.empty
-        }
-
-        let asset = AVURLAsset(url: url)
-        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-            throw Failure.failed("No video track.")
-        }
-
-        // `propertiesOf:` returns a composition whose instructions apply each
-        // track's preferredTransform. If it has no render size or no
-        // instructions the transform wouldn't be applied, so we refuse it and
-        // let the caller fall back to AVAssetImageGenerator (which also applies
-        // the transform). This is what keeps a wrong-orientation path from
-        // shipping.
-        let composition = AVMutableVideoComposition(propertiesOf: asset)
-        guard composition.renderSize.width > 0, composition.renderSize.height > 0,
-              !composition.instructions.isEmpty else {
-            throw Failure.failed("Couldn't configure a video composition.")
-        }
-        #if DEBUG
-        print(String(
-            format: "[FrameExtractor] composition render %.0fx%.0f, %d instructions",
-            composition.renderSize.width, composition.renderSize.height,
-            composition.instructions.count
-        ))
-        #endif
-
-        // The composition's render size is already upright; scale it down to the
-        // sticker canvas while preserving aspect ratio.
-        let target = fittedSize(composition.renderSize, maxDimension: frameMaxDimension)
-        let settings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: Int(target.width),
-            kCVPixelBufferHeightKey as String: Int(target.height)
-        ]
-
-        let reader = try AVAssetReader(asset: asset)
-        let end = CMTimeAdd(lastTime, CMTime(seconds: max(frameDuration, 1.0 / 30.0), preferredTimescale: 600))
-        reader.timeRange = CMTimeRange(start: firstTime, end: end)
-
-        let output = AVAssetReaderVideoCompositionOutput(videoTracks: [track], videoSettings: settings)
-        output.videoComposition = composition
-        output.alwaysCopiesSampleData = false
-        guard reader.canAdd(output) else {
-            throw Failure.failed("Reader can't add the video composition output.")
-        }
-        reader.add(output)
-        guard reader.startReading() else {
-            throw Failure.failed(reader.error?.localizedDescription ?? "Reader couldn't start.")
-        }
-
-        let total = Double(times.count)
-        var frames: [Frame] = []
-        var next = 0
-
-        while next < times.count, reader.status == .reading,
-              let sample = output.copyNextSampleBuffer() {
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            // Skip samples before the next target, then reuse this one render for
-            // every target that lands in this sample's interval.
-            guard CMTimeCompare(times[next], pts) <= 0 else { continue }
-            let rendered = CMSampleBufferGetImageBuffer(sample).flatMap { image(from: $0) }
-            while next < times.count, CMTimeCompare(times[next], pts) <= 0 {
-                if let rendered {
-                    frames.append(Frame(image: rendered, duration: frameDuration))
-                }
-                next += 1
-                reportProgress(onProgress, Double(next) / total)
-            }
-        }
-        if reader.status == .reading { reader.cancelReading() }
-
-        guard !frames.isEmpty else { throw Failure.empty }
-        reportProgress(onProgress, 1)
-        return frames
-    }
-
-    /// Renders a composed pixel buffer (already upright) to a `UIImage`.
-    private static func image(from buffer: CVPixelBuffer) -> UIImage? {
-        let ciImage = CIImage(cvPixelBuffer: buffer)
-        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
-            return nil
-        }
-        return UIImage(cgImage: cgImage)
-    }
-
-    /// Scales `size` down so its longest side is at most `maxDimension`,
-    /// preserving aspect ratio.
-    private static func fittedSize(_ size: CGSize, maxDimension: CGFloat) -> CGSize {
-        guard size.width > 0, size.height > 0, maxDimension > 0 else {
-            return CGSize(width: maxDimension, height: maxDimension)
-        }
-        let longest = max(size.width, size.height)
-        guard longest > maxDimension else { return size }
-        let ratio = maxDimension / longest
-        return CGSize(
-            width: max(1, (size.width * ratio).rounded()),
-            height: max(1, (size.height * ratio).rounded())
-        )
+        return min(15, max(1, Double(max(1, maxFrames)) / span))
     }
 
     /// Delivers progress on the main queue.
@@ -292,45 +168,28 @@ enum FrameExtractor {
         }
     }
 
-    /// Decodes `times` off the main thread. Each decode and conversion runs in
-    /// its own autorelease pool so 4K sources never pile up frames in memory.
+    /// Decodes `times` off the main thread with `AVAssetImageGenerator`
+    /// (`appliesPreferredTrackTransform = true`, so frames are upright). Each
+    /// decode runs in its own autorelease pool so frames never pile up.
     private static func decodeFrames(
         url: URL,
         times: [CMTime],
         frameDuration: TimeInterval,
         onProgress: ((Double) -> Void)?
-    ) throws -> [Frame] {
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: frameMaxDimension, height: frameMaxDimension)
-        generator.requestedTimeToleranceBefore = frameTolerance
-        generator.requestedTimeToleranceAfter = frameTolerance
-
+    ) async throws -> [Frame] {
+        let generator = makeGenerator(for: url)
         let total = Double(times.count)
         var frames: [Frame] = []
+        frames.reserveCapacity(times.count)
         for (index, time) in times.enumerated() {
-            let frame: Frame? = autoreleasepool {
-                guard let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) else { return nil }
-                let decoded = UIImage(cgImage: cgImage)
-                // The generator already caps at frameMaxDimension; only rescale if
-                // it didn't (defensive guard, normally a no-op).
-                let image = max(decoded.size.width, decoded.size.height) > frameMaxDimension
-                    ? decoded.scaled(toMaxDimension: frameMaxDimension)
-                    : decoded
-                return Frame(image: image, duration: frameDuration)
-            }
-            if let frame { frames.append(frame) }
-
-            if let onProgress, total > 0 {
-                let value = Double(index + 1) / total
-                if Thread.isMainThread {
-                    onProgress(value)
-                } else {
-                    DispatchQueue.main.async { onProgress(value) }
+            if let result = try? await generator.image(at: time) {
+                let frame = autoreleasepool {
+                    Frame(image: UIImage(cgImage: result.image), duration: frameDuration)
                 }
+                frames.append(frame)
             }
+            reportProgress(onProgress, total > 0 ? Double(index + 1) / total : 1)
         }
-
         guard !frames.isEmpty else { throw Failure.empty }
         return frames
     }

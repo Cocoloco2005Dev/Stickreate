@@ -12,7 +12,6 @@ struct PackEditorView: View {
     @State private var settings = SettingsStore.shared
     @State private var showingAdd = false
     @State private var showingExport = false
-    @State private var deleteTarget: DeleteTarget?
     @State private var activeAlert: ActiveAlert?
     @State private var draftName = ""
 
@@ -36,15 +35,13 @@ struct PackEditorView: View {
         let url: URL
     }
 
-    /// One alert channel so rename and error can never fight over presentation.
+    /// One alert channel so rename, delete, and errors can never fight over
+    /// presentation and always anchor to the screen.
     private enum ActiveAlert {
         case rename
         case error(String)
-    }
-
-    private enum DeleteTarget {
-        case pack
-        case sticker(StickerItem)
+        case deletePack
+        case deleteSticker(StickerItem)
     }
 
     private enum EditTask: Identifiable {
@@ -123,15 +120,6 @@ struct PackEditorView: View {
                 alertActions
             } message: {
                 alertMessage
-            }
-            .confirmationDialog(
-                deleteTitle,
-                isPresented: deleteIsPresented,
-                titleVisibility: .visible
-            ) {
-                deleteActions
-            } message: {
-                Text(deleteMessage)
             }
     }
 
@@ -312,7 +300,7 @@ struct PackEditorView: View {
         case .emojis(let item):
             emojiTarget = item
         case .delete(let item):
-            deleteTarget = .sticker(item)
+            activeAlert = .deleteSticker(item)
         }
     }
 
@@ -343,7 +331,7 @@ struct PackEditorView: View {
         Divider()
 
         Button("Delete", systemImage: "trash", role: .destructive) {
-            deleteTarget = .sticker(item)
+            activeAlert = .deleteSticker(item)
         }
     }
 
@@ -412,7 +400,7 @@ struct PackEditorView: View {
                 Divider()
 
                 Button("Delete Pack…", systemImage: "trash", role: .destructive) {
-                    deleteTarget = .pack
+                    activeAlert = .deletePack
                 }
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
@@ -434,6 +422,8 @@ struct PackEditorView: View {
         switch activeAlert {
         case .rename: "Rename Pack"
         case .error: "Something went wrong"
+        case .deletePack: "Delete this pack?"
+        case .deleteSticker: "Delete this sticker?"
         case nil: ""
         }
     }
@@ -447,6 +437,14 @@ struct PackEditorView: View {
             Button("Cancel", role: .cancel) {}
         case .error:
             Button("OK", role: .cancel) {}
+        case .deletePack:
+            Button("Delete Pack", role: .destructive) { deletePack() }
+            Button("Cancel", role: .cancel) {}
+        case .deleteSticker(let item):
+            Button("Delete Sticker", role: .destructive) {
+                store.removeSticker(item.id, from: packID)
+            }
+            Button("Cancel", role: .cancel) {}
         case nil:
             EmptyView()
         }
@@ -457,47 +455,10 @@ struct PackEditorView: View {
         switch activeAlert {
         case .rename: Text("Give this pack a name.")
         case .error(let message): Text(message)
+        case .deletePack: Text("This removes the pack and all its stickers. You can't undo this.")
+        case .deleteSticker: Text("This removes the sticker from the pack. You can't undo this.")
         case nil: EmptyView()
         }
-    }
-
-    private var deleteIsPresented: Binding<Bool> {
-        Binding(
-            get: { deleteTarget != nil },
-            set: { if !$0 { deleteTarget = nil } }
-        )
-    }
-
-    private var deleteTitle: String {
-        switch deleteTarget {
-        case .pack: "Delete this pack?"
-        case .sticker: "Delete this sticker?"
-        case nil: ""
-        }
-    }
-
-    private var deleteMessage: String {
-        switch deleteTarget {
-        case .pack: "This removes the pack and all its stickers. You can't undo this."
-        case .sticker: "This removes the sticker from the pack. You can't undo this."
-        case nil: ""
-        }
-    }
-
-    @ViewBuilder
-    private var deleteActions: some View {
-        switch deleteTarget {
-        case .pack:
-            Button("Delete Pack", role: .destructive) { deletePack() }
-        case .sticker(let item):
-            Button("Delete Sticker", role: .destructive) {
-                store.removeSticker(item.id, from: packID)
-            }
-        case nil:
-            EmptyView()
-        }
-
-        Button("Cancel", role: .cancel) {}
     }
 
     // MARK: - Actions

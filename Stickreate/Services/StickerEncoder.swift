@@ -242,13 +242,19 @@ enum StickerEncoder {
         return result
     }
 
-    /// Progressively fewer frames: every 2nd, then 12, 9, 6 — never the full set
-    /// (the caller tries that first) and never below two.
+    /// Smallest frame count the size-budget ladder may fall back to, so a
+    /// sticker never ends up with a "very few frames" animation. The hard floor
+    /// of 2 still applies upstream (a valid animation needs ≥ 2).
+    private static let minUsableFrames = 8
+
+    /// Progressively fewer frames: every 2nd, then 16, 12, 9 — never the full set
+    /// (the caller tries that first) and never below `minUsableFrames`.
     private static func frameLadder(_ frames: [Frame]) -> [[Frame]] {
         var counts = Set<Int>()
-        if frames.count > 2 { counts.insert(frames.count / 2) }
-        [12, 9, 6].forEach { counts.insert($0) }
-        let valid = counts.filter { $0 >= 2 && $0 < frames.count }.sorted(by: >)
+        if frames.count > minUsableFrames { counts.insert(frames.count / 2) }
+        [16, 12, 9].forEach { counts.insert($0) }
+        let floor = min(minUsableFrames, frames.count)
+        let valid = counts.filter { $0 >= floor && $0 < frames.count }.sorted(by: >)
         return valid.map { resample(frames, to: $0) }
     }
 

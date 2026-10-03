@@ -38,6 +38,8 @@ struct VideoTrimView: View {
     @State private var timeObserver: Any?
     /// Fires when playback crosses `upperBound`, so it can loop back to `lowerBound`.
     @State private var loopObserver: Any?
+    /// Fires when the item reaches its own end (selection runs to the last frame).
+    @State private var endObserver: NSObjectProtocol?
     @State private var playheadImage: UIImage?
     @State private var thumbTask: Task<Void, Never>?
 
@@ -87,7 +89,8 @@ struct VideoTrimView: View {
         }
         .preferredColorScheme(.dark)
         .task { await load() }
-        .onChange(of: upperBound) { _, _ in installLoopObserver() }
+        .onChange(of: lowerBound) { _, _ in handleSelectionChange() }
+        .onChange(of: upperBound) { _, _ in handleSelectionChange() }
         .onDisappear { teardownPlayer() }
         .alert(
             "Couldn't create sticker",
@@ -182,19 +185,34 @@ struct VideoTrimView: View {
     // MARK: - Preview
 
     private var previewArea: some View {
-        ZStack {
-            Color.black
+        GeometryReader { proxy in
+            let available = proxy.size
+            let box = videoBox(in: available)
 
-            if let player {
-                PlayerLayerView(player: player)
-            } else {
-                ProgressView()
-                    .tint(.white)
+            ZStack {
+                Color.black
+
+                if let player {
+                    PlayerLayerView(player: player)
+                        .frame(width: box.width, height: box.height)
+                } else {
+                    ProgressView()
+                        .tint(.white)
+                }
             }
+            .frame(width: available.width, height: available.height)
+            .overlay { playButton }
+            .accessibilityElement(children: .contain)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay { playButton }
-        .accessibilityElement(children: .contain)
+    }
+
+    /// Largest aspect-fit box for the video inside `available`, so the preview
+    /// always fits the space left for it.
+    private func videoBox(in available: CGSize) -> CGSize {
+        guard available.width > 0, available.height > 0 else { return .zero }
+        guard let aspect = videoAspect, aspect > 0 else { return available }
+        let width = min(available.width, available.height * aspect)
+        return CGSize(width: width, height: width / aspect)
     }
 
     private var playButton: some View {
@@ -443,18 +461,48 @@ struct VideoTrimView: View {
             player.actionAtItemEnd = .pause
             self.player = player
 
+            // Loops reliably: the periodic tick is the primary path, and it also
+            // clamps the marker when the selection moves.
             timeObserver = player.addPeriodicTimeObserver(
-                forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+                forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
                 queue: .main
             ) { time in
                 let seconds = CMTimeGetSeconds(time)
                 guard seconds.isFinite else { return }
-                // Keep the marker inside the selected range so it never reads as
-                // playing outside the choice.
-                playhead = min(max(seconds, lowerBound), upperBound)
+                guard isPlaying else {
+                    playhead = min(max(seconds, lowerBound), upperBound)
+                    return
+                }
+                if seconds >= upperBound || seconds < lowerBound {
+                    player.seek(
+                        to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+                        toleranceBefore: .zero,
+                        toleranceAfter: .zero
+                    )
+                    playhead = lowerBound
+                    player.play()
+                } else {
+                    playhead = seconds
+                }
             }
 
             installLoopObserver()
+
+            // Safety net for when the selection reaches the item's own end.
+            endObserver = NotificationCenter.default.addObserver(
+                forName: AVPlayerItem.didPlayToEndTimeNotification,
+                object: player.currentItem,
+                queue: .main
+            ) { _ in
+                guard isPlaying else { return }
+                player.seek(
+                    to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+                playhead = lowerBound
+                player.play()
+            }
 
             isLoading = false
             _ = await player.seek(
@@ -486,6 +534,10 @@ struct VideoTrimView: View {
             player.removeTimeObserver(loopObserver)
         }
         loopObserver = nil
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+        endObserver = nil
         thumbTask?.cancel()
         thumbTask = nil
     }
@@ -500,13 +552,43 @@ struct VideoTrimView: View {
             self.loopObserver = nil
         }
         let boundary = NSValue(time: CMTime(seconds: upperBound, preferredTimescale: 600))
-        loopObserver = player.addBoundaryTimeObserver(forTimes: [boundary], queue: .main) { [weak player] in
-            guard let player, isPlaying else { return }
+        loopObserver = player.addBoundaryTimeObserver(forTimes: [boundary], queue: .main) {
+            guard isPlaying else { return }
             player.seek(
                 to: CMTime(seconds: lowerBound, preferredTimescale: 600),
                 toleranceBefore: .zero,
                 toleranceAfter: .zero
             )
+            playhead = lowerBound
+            player.play()
+        }
+    }
+
+    /// Seeks back to the start of the selection and keeps playing.
+    private func loopToStart() {
+        guard let player else { return }
+        player.seek(
+            to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+        playhead = lowerBound
+        if isPlaying {
+            player.play()
+        }
+    }
+
+    /// When the selection moves while playing, immediately clamp the playhead
+    /// and the player into the new range.
+    private func handleSelectionChange() {
+        installLoopObserver()
+        playhead = min(max(playhead, lowerBound), upperBound)
+
+        guard isPlaying, let player else { return }
+        let current = CMTimeGetSeconds(player.currentTime())
+        guard current.isFinite else { return }
+        if current < lowerBound || current > upperBound {
+            loopToStart()
         }
     }
 

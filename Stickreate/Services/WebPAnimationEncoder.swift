@@ -72,6 +72,17 @@ enum WebPAnimationEncoder {
             guard w == width, h == height else { return nil }
         }
 
+        #if DEBUG
+        // Frames are expected UPRIGHT before encoding: `FrameExtractor` decodes
+        // with `AVAssetImageGenerator.appliesPreferredTrackTransform = true`, so
+        // the track's rotation/mirroring is already baked in. This encoder never
+        // rotates — a flipped input would ship a flipped sticker.
+        assert(
+            frames.allSatisfy { $0.imageOrientation == .up },
+            "WebPAnimationEncoder expects upright frames; extraction must apply the track transform"
+        )
+        #endif
+
         var encOptions = WebPAnimEncoderOptions()
         guard WebPAnimEncoderOptionsInit(&encOptions) != 0 else { return nil }
         encOptions.anim_params.loop_count = Int32(options.loopCount)

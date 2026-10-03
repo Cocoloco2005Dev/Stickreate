@@ -1,4 +1,5 @@
 import UIKit
+import Foundation
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
@@ -286,14 +287,49 @@ enum StickerFactory {
         return item
     }
 
+    /// Hard ceiling for the single-mask cut-out. If Vision or the per-frame
+    /// compositing doesn't finish in time, the original frames are used so the
+    /// UI can never sit on a frozen still.
+    private static let cutOutTimeout: TimeInterval = 8
+
     /// Applies a single Vision subject mask to every frame, so the animated
-    /// cutout can't flicker. The mask is computed once from the middle frame
-    /// (a representative pose) and composited onto each frame. All frames share
-    /// dimensions, so the mask applies directly. Returns nil when the mask step
-    /// fails, signalling the caller to use the original frames.
+    /// cutout can't flicker. The mask is computed once from the middle frame and
+    /// composited onto each frame sequentially (bounded work, always completes).
+    /// A watchdog aborts to the ORIGINAL frames if the whole step runs over
+    /// `cutOutTimeout`.
     ///
-    /// `onProgress` is the single Vision pass mapped into `0...1`.
+    /// `onProgress` is the Vision pass + per-frame compositing mapped into `0...1`.
     private static func cutOut(_ frames: [Frame], onProgress: ((Double) -> Void)? = nil) async -> [Frame]? {
+        guard !frames.isEmpty else { return nil }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<[Frame]?, Never>) in
+            let gate = ResumeOnce(continuation)
+            // Ignore progress once the race is decided, so a late/timed-out work
+            // task can't push stale `.cutting` updates after the fallback.
+            let progress: ((Double) -> Void)? = onProgress.map { forward in
+                { value in if gate.isPending { forward(value) } }
+            }
+            let work = Task.detached(priority: .userInitiated) { () -> [Frame]? in
+                await computeCutout(frames, onProgress: progress)
+            }
+            // Deliver the result if it finishes first; the watchdog resumes `nil`
+            // (original frames) and cancels the work if it doesn't. `gate` makes
+            // the race safe: the continuation is resumed exactly once.
+            let watchdog = Task {
+                try? await Task.sleep(nanoseconds: UInt64(cutOutTimeout * 1_000_000_000))
+                work.cancel()
+                gate.resume(nil)
+            }
+            Task {
+                gate.resume(await work.value)
+                watchdog.cancel()
+            }
+        }
+    }
+
+    /// The actual single-mask work: one Vision pass, then composite every frame
+    /// through that mask in order. Returns nil on failure or cancellation so the
+    /// caller falls back to the original frames.
+    private static func computeCutout(_ frames: [Frame], onProgress: ((Double) -> Void)?) async -> [Frame]? {
         guard !frames.isEmpty else { return nil }
         let representative = frames[frames.count / 2]
 
@@ -305,35 +341,50 @@ enum StickerFactory {
             onProgress?(1)
             return nil
         }
-        onProgress?(1)
+        if Task.isCancelled { return nil }
+        guard !extraction.instances.isEmpty else {
+            // No detected subject means a blank mask; use the original frames.
+            onProgress?(1)
+            return nil
+        }
 
-        // No detected subject means a blank mask; fall back to the original
-        // frames rather than producing an empty cutout.
-        guard !extraction.instances.isEmpty else { return nil }
-
-        // Composite every frame through the same mask, off the caller's actor
-        // (this may be the main actor) with bounded concurrency. Order is kept.
         let mask = extraction.mask
-        var result = [Frame](repeating: frames[0], count: frames.count)
-        await withTaskGroup(of: (Int, UIImage?).self) { group in
-            var nextIndex = 0
-            var inFlight = 0
-            let maxInFlight = 4
-            while nextIndex < frames.count || inFlight > 0 {
-                while nextIndex < frames.count, inFlight < maxInFlight {
-                    let index = nextIndex
-                    let image = frames[index].image
-                    group.addTask { (index, composite(image, through: mask)) }
-                    nextIndex += 1
-                    inFlight += 1
-                }
-                if let (index, composed) = await group.next() {
-                    result[index] = Frame(image: composed ?? frames[index].image, duration: frames[index].duration)
-                    inFlight -= 1
-                }
-            }
+        var result: [Frame] = []
+        result.reserveCapacity(frames.count)
+        let total = Double(frames.count)
+        for (index, frame) in frames.enumerated() {
+            if Task.isCancelled { return nil }
+            let image = composite(frame.image, through: mask) ?? frame.image
+            result.append(Frame(image: image, duration: frame.duration))
+            onProgress?(Double(index + 1) / total)
         }
         return result
+    }
+
+    /// Resumes a continuation at most once, so the work task and the watchdog can
+    /// race without a double-resume crash.
+    private final class ResumeOnce {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<[Frame]?, Never>?
+
+        init(_ continuation: CheckedContinuation<[Frame]?, Never>) {
+            self.continuation = continuation
+        }
+
+        /// True until the continuation has been resumed.
+        var isPending: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return continuation != nil
+        }
+
+        func resume(_ value: [Frame]?) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            pending?.resume(returning: value)
+        }
     }
 
     /// Composites `image` through a single-channel grayscale `mask` (white =
