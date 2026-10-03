@@ -441,7 +441,8 @@ struct LibraryView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            if url.pathExtension.lowercased() == "stickreatepack" {
+            let ext = url.pathExtension.lowercased()
+            if ext == PackArchive.fileExtension || ext == "stickreatepack" {
                 importPackFile(url)
             } else {
                 Task { await importMediaFile(url) }

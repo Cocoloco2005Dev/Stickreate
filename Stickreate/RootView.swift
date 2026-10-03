@@ -56,7 +56,8 @@ struct RootView: View {
     }
 
     private func handleIncoming(_ url: URL) {
-        if url.pathExtension.lowercased() == "stickreatepack" {
+        let ext = url.pathExtension.lowercased()
+        if ext == PackArchive.fileExtension || ext == "stickreatepack" {
             importPackArchive(url)
             return
         }
