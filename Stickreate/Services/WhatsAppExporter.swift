@@ -34,6 +34,13 @@ enum WhatsAppExporter {
     /// Mixed packs can't be imported by WhatsApp in one go; callers should export
     /// `pack.staticStickers` and `pack.animatedStickers` separately through
     /// `export(stickers:kind:name:publisher:identifier:)`.
+    ///
+    /// The identifier is derived from the pack's stable `id` (never a fresh UUID
+    /// per call) and `name`/`publisher` come straight from the pack, so
+    /// re-exporting the same pack reuses the same identifier and updates the
+    /// existing WhatsApp pack instead of creating a new one. WhatsApp has a known
+    /// bug where it can still show a duplicate entry even when the identifier is
+    /// unchanged.
     static func export(_ pack: StickerPack) throws {
         try pack.validate()
         guard !pack.isMixed else {
@@ -55,7 +62,9 @@ enum WhatsAppExporter {
     ///
     /// `identifier` is sanitized to WhatsApp's accepted charset and
     /// `animated_sticker_pack` is set only for `kind == .animated`. The tray icon
-    /// comes from the first sticker's `previewData`.
+    /// comes from the first sticker's `previewData`. Callers must pass a stable
+    /// `identifier` for a given pack (and a distinct suffix per kind for a split
+    /// mixed pack) so re-exports update the existing pack.
     static func export(
         stickers: [StickerItem],
         kind: StickerKind,

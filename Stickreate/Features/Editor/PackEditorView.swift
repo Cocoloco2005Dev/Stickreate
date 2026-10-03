@@ -18,9 +18,18 @@ struct PackEditorView: View {
 
     @State private var editTask: EditTask?
     @State private var emojiTarget: StickerItem?
+    @State private var previewItem: StickerItem?
+    @State private var pendingPreviewAction: PreviewAction?
 
     @State private var showingFolder = false
     @State private var shareItem: ShareItem?
+
+    /// Deferred so it can run after the large preview sheet closes.
+    private enum PreviewAction {
+        case edit(StickerItem)
+        case emojis(StickerItem)
+        case delete(StickerItem)
+    }
 
     private struct ShareItem: Identifiable {
         let id = UUID()
@@ -55,6 +64,12 @@ struct PackEditorView: View {
 
     private var canExport: Bool {
         guard let pack else { return false }
+        // A mixed pack splits into two exports, so it's exportable when either
+        // subset alone meets the minimum.
+        if pack.isMixed {
+            return pack.staticStickers.count >= Limits.minStickers
+                || pack.animatedStickers.count >= Limits.minStickers
+        }
         return pack.stickers.count >= Limits.minStickers
     }
 
@@ -78,6 +93,18 @@ struct PackEditorView: View {
                 EmojiPickerSheet(initialEmojis: item.emojis) { emojis in
                     store.setEmojis(emojis, for: item.id, in: packID)
                 }
+            }
+            .sheet(item: $previewItem, onDismiss: runPreviewAction) { item in
+                StickerPreviewSheet(
+                    item: item,
+                    isCover: pack?.stickers.first?.id == item.id,
+                    canDuplicate: (pack?.stickers.count ?? 0) < Limits.maxStickers,
+                    onEdit: { pendingPreviewAction = .edit(item) },
+                    onEmojis: { pendingPreviewAction = .emojis(item) },
+                    onSetCover: { store.setCover(item.id, in: packID) },
+                    onDuplicate: { store.duplicateSticker(item.id, in: packID) },
+                    onDelete: { pendingPreviewAction = .delete(item) }
+                )
             }
             .sheet(isPresented: $showingFolder) {
                 FolderPickerSheet(
@@ -152,7 +179,8 @@ struct PackEditorView: View {
                             item: item,
                             index: index,
                             isCover: index == 0,
-                            onAdd: nil
+                            onAdd: nil,
+                            onTap: { previewItem = item }
                         ) {
                             tileMenu(for: item, isCover: index == 0)
                         }
@@ -181,10 +209,17 @@ struct PackEditorView: View {
     }
 
     private func header(for pack: StickerPack) -> some View {
-        HStack(spacing: 8) {
-            Label(kindLabel(for: pack), systemImage: kindSymbol(for: pack))
-            Spacer()
-            Text("\(pack.stickers.count) of \(Limits.maxStickers)")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Label(kindLabel(for: pack), systemImage: kindSymbol(for: pack))
+                Spacer()
+                Text("\(pack.stickers.count) of \(Limits.maxStickers)")
+            }
+
+            if pack.isMixed {
+                Text("\(pack.staticStickers.count) static · \(pack.animatedStickers.count) animated")
+                    .font(.caption)
+            }
         }
         .font(.subheadline)
         .foregroundStyle(.secondary)
@@ -194,11 +229,13 @@ struct PackEditorView: View {
     /// Kind from the actual stickers: a sticker's preview is always a still, so
     /// the cover alone can't tell you whether the pack is animated.
     private func kindLabel(for pack: StickerPack) -> String {
+        if pack.isMixed { return "Mixed" }
         guard !pack.stickers.isEmpty else { return "Empty" }
         return pack.animatedStickers.count > pack.staticStickers.count ? "Animated" : "Static"
     }
 
     private func kindSymbol(for pack: StickerPack) -> String {
+        if pack.isMixed { return "square.grid.2x2" }
         guard !pack.stickers.isEmpty else { return "photo" }
         return pack.animatedStickers.count > pack.staticStickers.count ? "play.rectangle" : "photo"
     }
@@ -255,10 +292,28 @@ struct PackEditorView: View {
     }
 
     private func exportHint(for pack: StickerPack) -> String {
+        if pack.isMixed {
+            return "Each kind needs at least \(Limits.minStickers) stickers to export."
+        }
         let needed = max(0, Limits.minStickers - pack.stickers.count)
         return needed == 1
             ? "Add 1 more sticker to export to WhatsApp."
             : "Add \(needed) more stickers to export to WhatsApp."
+    }
+
+    /// Runs the deferred preview action once the large preview sheet is gone.
+    private func runPreviewAction() {
+        guard let action = pendingPreviewAction else { return }
+        pendingPreviewAction = nil
+
+        switch action {
+        case .edit(let item):
+            edit(item)
+        case .emojis(let item):
+            emojiTarget = item
+        case .delete(let item):
+            deleteTarget = .sticker(item)
+        }
     }
 
     // MARK: - Tile menu

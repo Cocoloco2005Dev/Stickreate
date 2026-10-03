@@ -8,6 +8,7 @@ struct StickerCell<MenuContent: View>: View {
     let index: Int
     let isCover: Bool
     let onAdd: (() -> Void)?
+    let onTap: (() -> Void)?
     let menu: MenuContent
 
     init(
@@ -15,12 +16,14 @@ struct StickerCell<MenuContent: View>: View {
         index: Int,
         isCover: Bool,
         onAdd: (() -> Void)? = nil,
+        onTap: (() -> Void)? = nil,
         @ViewBuilder menu: () -> MenuContent
     ) {
         self.item = item
         self.index = index
         self.isCover = isCover
         self.onAdd = onAdd
+        self.onTap = onTap
         self.menu = menu()
     }
 
@@ -44,9 +47,11 @@ struct StickerCell<MenuContent: View>: View {
             .overlay(alignment: .topTrailing) { trailingBadges(for: item) }
             .overlay(alignment: .bottomLeading) { emojiBadge(for: item) }
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .onTapGesture { onTap?() }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel(for: item))
-            .accessibilityAddTraits(.isImage)
+            .accessibilityHint("Opens a large preview")
+            .accessibilityAddTraits([.isImage, .isButton])
     }
 
     @ViewBuilder

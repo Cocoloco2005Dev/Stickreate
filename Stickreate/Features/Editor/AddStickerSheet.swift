@@ -518,7 +518,7 @@ struct AddStickerSheet: View {
     }
 
     /// Items the user never edited: photos keep their background; videos use the
-    /// first 10 s at the default frame rate; GIFs rebuild from their source.
+    /// first 10 s at an automatic frame rate; GIFs rebuild from their source.
     private func defaultSticker(for item: QueueItem) async throws -> StickerItem {
         switch item.source {
         case .image:
@@ -540,11 +540,10 @@ struct AddStickerSheet: View {
             let draft = try await StickerFactory.loadVideoDraft(from: item.source)
             guard draft.duration > 0 else { throw StickerFactory.Failure.empty }
             let upper = min(draft.duration, Limits.maxAnimationDuration)
-            let fps = min(max(SettingsStore.shared.defaultFPS, 5), 30)
             return try await StickerFactory.makeAnimatedSticker(
                 from: draft,
                 range: 0...upper,
-                fps: Double(fps),
+                fps: 0,                     // automatic frame rate
                 removeBackground: false,
                 source: item.source,
                 onStage: onStage

@@ -107,11 +107,12 @@ enum StickerFactory {
         source: StickerSource? = nil,
         onStage: ((StickerCreationStage) -> Void)? = nil
     ) throws -> StickerItem {
-        onStage?(.compressing)
+        onStage?(.compressing(0))
         guard let stickerData = StickerEncoder.staticSticker(from: image),
               let previewData = StickerEncoder.previewPNG(from: image, size: 512) else {
             throw Failure.failed("Couldn't encode this sticker.")
         }
+        onStage?(.compressing(1))
         onStage?(.saving)
         let item = StickerItem(
             kind: .static,
@@ -171,10 +172,14 @@ enum StickerFactory {
         let frames = cropRect.map { rect in
             extracted.map { Frame(image: crop($0.image, to: rect), duration: $0.duration) }
         } ?? extracted
+        // Pass the trimmed span so the encoder can make the integer-millisecond
+        // frame durations sum to exactly the requested length.
+        let span = max(0, range.upperBound - range.lowerBound)
         return try await makeAnimated(
             from: frames,
             removeBackground: removeBackground,
             source: source,
+            targetDuration: span,
             onProgress: removeBackground ? onProgress : nil,
             onStage: onStage
         )
@@ -222,6 +227,7 @@ enum StickerFactory {
         from frames: [Frame],
         removeBackground: Bool,
         source: StickerSource?,
+        targetDuration: TimeInterval? = nil,
         onProgress: ((Double) -> Void)? = nil,
         onStage: ((StickerCreationStage) -> Void)? = nil
     ) async throws -> StickerItem {
@@ -246,12 +252,16 @@ enum StickerFactory {
             usable = frames
         }
 
-        onStage?(.compressing)
+        onStage?(.compressing(0))
         #if DEBUG
         let encodeStarted = CFAbsoluteTimeGetCurrent()
         #endif
-        guard let stickerData = StickerEncoder.animatedSticker(from: usable),
-              let previewData = StickerEncoder.previewPNG(from: usable[0].image, size: 512) else {
+        guard let stickerData = StickerEncoder.animatedSticker(
+            from: usable,
+            targetDuration: targetDuration,
+            onProgress: { fraction in onStage?(.compressing(fraction)) }
+        ),
+        let previewData = StickerEncoder.previewPNG(from: usable[0].image, size: 512) else {
             throw Failure.failed("Couldn't encode this animated sticker.")
         }
         #if DEBUG

@@ -6,7 +6,7 @@ enum StickerCreationStage: Equatable, Sendable {
     case loading
     case extracting(Double)   // frame extraction, 0...1
     case cutting(Double)      // Vision subject lift, 0...1
-    case compressing          // indeterminate: WebP encode can take a while
+    case compressing(Double)  // WebP encode, 0...1
     case saving
     case done
 
@@ -18,8 +18,8 @@ enum StickerCreationStage: Equatable, Sendable {
             "Extracting frames… \(Self.percent(progress))%"
         case .cutting(let progress):
             "Intelligent Cut… \(Self.percent(progress))%"
-        case .compressing:
-            "Optimizing WebP…"
+        case .compressing(let progress):
+            "Optimizing WebP… \(Self.percent(progress))%"
         case .saving:
             "Saving…"
         case .done:
@@ -30,9 +30,9 @@ enum StickerCreationStage: Equatable, Sendable {
     /// `0...1` when the stage is determinate, `nil` for indeterminate stages.
     var fraction: Double? {
         switch self {
-        case .loading, .compressing, .saving:
+        case .loading, .saving:
             nil
-        case .extracting(let progress), .cutting(let progress):
+        case .extracting(let progress), .cutting(let progress), .compressing(let progress):
             min(max(progress, 0), 1)
         case .done:
             1.0

@@ -29,7 +29,7 @@ enum FrameExtractor {
     /// canvas, so frames are never decoded larger than the encoder needs.
     private static let frameMaxDimension: CGFloat = CGFloat(Limits.canvas)
 
-    /// Shared Core Image context for applying a track transform to reader output.
+    /// Shared Core Image context for converting composed pixel buffers to images.
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     /// Loads a video's duration without extracting any frames.
@@ -116,10 +116,10 @@ enum FrameExtractor {
         let started = CFAbsoluteTimeGetCurrent()
         #endif
         let task = Task.detached(priority: .userInitiated) {
-            // Preferred: one sequential AVAssetReader pass decoding every sample
-            // in order. Far cheaper than N independent AVAssetImageGenerator seeks
-            // on long/high-resolution clips. Falls back if it can't be configured
-            // or yields no frames.
+            // Preferred: one sequential AVAssetReader pass through a video
+            // composition (applies preferredTransform, so frames are upright).
+            // Falls back to AVAssetImageGenerator if it can't be configured or
+            // yields no frames — that path also applies the transform.
             if let sequential = try? await decodeFramesSequentially(
                 url: url,
                 times: times,
@@ -163,9 +163,17 @@ enum FrameExtractor {
         return min(30, max(1, Double(max(1, maxFrames)) / span))
     }
 
-    /// Decodes `times` in a single sequential pass with `AVAssetReader`, keeping
-    /// output at or below the 512 px canvas. The track's `preferredTransform` is
-    /// applied to each buffer. One pass, no random seeks.
+    /// Decodes `times` in a single sequential pass, keeping output at or below
+    /// the 512 px canvas. One pass, no random seeks.
+    ///
+    /// Orientation: the reader runs through an `AVAssetReaderVideoCompositionOutput`
+    /// whose composition is built with `AVMutableVideoComposition(propertiesOf:)`.
+    /// That composition carries a layer instruction per track that applies the
+    /// track's `preferredTransform`, so rotated/mirrored sources come out upright.
+    /// Decoding raw `AVAssetReaderTrackOutput` buffers and re-applying
+    /// `preferredTransform` by hand is what previously produced upside-down
+    /// frames. If the composition can't be configured this throws and the caller
+    /// falls back to `AVAssetImageGenerator`, which also applies the transform.
     private static func decodeFramesSequentially(
         url: URL,
         times: [CMTime],
@@ -180,12 +188,29 @@ enum FrameExtractor {
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw Failure.failed("No video track.")
         }
-        let naturalSize = try await track.load(.naturalSize)
-        let transform = try await track.load(.preferredTransform)
 
-        // Never decode larger than the sticker canvas; aspect is preserved because
-        // the requested size is the natural size scaled to fit.
-        let target = fittedSize(naturalSize, maxDimension: frameMaxDimension)
+        // `propertiesOf:` returns a composition whose instructions apply each
+        // track's preferredTransform. If it has no render size or no
+        // instructions the transform wouldn't be applied, so we refuse it and
+        // let the caller fall back to AVAssetImageGenerator (which also applies
+        // the transform). This is what keeps a wrong-orientation path from
+        // shipping.
+        let composition = AVMutableVideoComposition(propertiesOf: asset)
+        guard composition.renderSize.width > 0, composition.renderSize.height > 0,
+              !composition.instructions.isEmpty else {
+            throw Failure.failed("Couldn't configure a video composition.")
+        }
+        #if DEBUG
+        print(String(
+            format: "[FrameExtractor] composition render %.0fx%.0f, %d instructions",
+            composition.renderSize.width, composition.renderSize.height,
+            composition.instructions.count
+        ))
+        #endif
+
+        // The composition's render size is already upright; scale it down to the
+        // sticker canvas while preserving aspect ratio.
+        let target = fittedSize(composition.renderSize, maxDimension: frameMaxDimension)
         let settings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: Int(target.width),
@@ -196,10 +221,11 @@ enum FrameExtractor {
         let end = CMTimeAdd(lastTime, CMTime(seconds: max(frameDuration, 1.0 / 30.0), preferredTimescale: 600))
         reader.timeRange = CMTimeRange(start: firstTime, end: end)
 
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+        let output = AVAssetReaderVideoCompositionOutput(videoTracks: [track], videoSettings: settings)
+        output.videoComposition = composition
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else {
-            throw Failure.failed("Reader can't add the video output.")
+            throw Failure.failed("Reader can't add the video composition output.")
         }
         reader.add(output)
         guard reader.startReading() else {
@@ -216,9 +242,7 @@ enum FrameExtractor {
             // Skip samples before the next target, then reuse this one render for
             // every target that lands in this sample's interval.
             guard CMTimeCompare(times[next], pts) <= 0 else { continue }
-            let rendered = CMSampleBufferGetImageBuffer(sample).flatMap {
-                image(from: $0, applying: transform)
-            }
+            let rendered = CMSampleBufferGetImageBuffer(sample).flatMap { image(from: $0) }
             while next < times.count, CMTimeCompare(times[next], pts) <= 0 {
                 if let rendered {
                     frames.append(Frame(image: rendered, duration: frameDuration))
@@ -234,12 +258,10 @@ enum FrameExtractor {
         return frames
     }
 
-    /// Renders a decoded pixel buffer to an upright `UIImage`, applying the
-    /// track transform when it isn't the identity.
-    private static func image(from buffer: CVPixelBuffer, applying transform: CGAffineTransform) -> UIImage? {
-        let base = CIImage(cvPixelBuffer: buffer)
-        let oriented = transform.isIdentity ? base : base.transformed(by: transform)
-        guard let cgImage = ciContext.createCGImage(oriented, from: oriented.extent) else {
+    /// Renders a composed pixel buffer (already upright) to a `UIImage`.
+    private static func image(from buffer: CVPixelBuffer) -> UIImage? {
+        let ciImage = CIImage(cvPixelBuffer: buffer)
+        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
             return nil
         }
         return UIImage(cgImage: cgImage)

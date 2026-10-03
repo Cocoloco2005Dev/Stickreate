@@ -164,7 +164,6 @@ struct VideoTrimView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay { playButton }
-        .overlay(alignment: .bottom) { timeBar }
         .accessibilityElement(children: .contain)
     }
 
@@ -184,33 +183,55 @@ struct VideoTrimView: View {
         .accessibilityHint("Plays the video preview")
     }
 
-    private var timeBar: some View {
-        HStack {
-            timeChip(timeString(playhead))
-            Spacer(minLength: 8)
-            timeChip(timeString(duration))
+    /// Playback scrubber under the preview: shows and sets the current position.
+    private var scrubberRow: some View {
+        HStack(spacing: 12) {
+            Text(timeString(playhead))
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, alignment: .leading)
+
+            Slider(value: scrubBinding, in: 0...max(duration, 0.01))
+                .tint(.white)
+                .accessibilityLabel("Playback position")
+                .accessibilityValue(Text("\(timeString(playhead)) of \(timeString(duration))"))
+
+            Text(timeString(duration))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .trailing)
         }
-        .padding(12)
     }
 
-    private func timeChip(_ text: String) -> some View {
-        Text(text)
-            .font(.caption.monospacedDigit().weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.black.opacity(0.45), in: Capsule())
+    private var scrubBinding: Binding<Double> {
+        Binding(
+            get: { min(max(playhead, 0), max(duration, 0.01)) },
+            set: { value in
+                if isPlaying {
+                    player?.pause()
+                    isPlaying = false
+                }
+                playhead = value
+                player?.seek(
+                    to: CMTime(seconds: value, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+            }
+        )
     }
 
     // MARK: - Bottom panel
 
     private var bottomPanel: some View {
         VStack(spacing: 12) {
+            scrubberRow
             selectionReadout
 
             FilmstripView(
                 thumbnails: filmstrip,
                 duration: duration,
+                playhead: playhead,
                 minSpan: min(0.2, duration),
                 maxSpan: min(Limits.maxAnimationDuration, duration),
                 lower: $lowerBound,
@@ -500,6 +521,7 @@ private struct PlayerLayerView: UIViewRepresentable {
 private struct FilmstripView: View {
     let thumbnails: [UIImage]
     let duration: TimeInterval
+    let playhead: TimeInterval
     let minSpan: TimeInterval
     let maxSpan: TimeInterval
     @Binding var lower: TimeInterval
@@ -555,6 +577,14 @@ private struct FilmstripView: View {
 
                 handleBar.position(x: lowerX, y: stripHeight / 2)
                 handleBar.position(x: upperX, y: stripHeight / 2)
+
+                // Playhead at the current playback position.
+                playheadMark
+                    .position(
+                        x: x(for: min(max(playhead, 0), duration), width: width),
+                        y: stripHeight / 2
+                    )
+                    .allowsHitTesting(false)
             }
             .frame(width: width, height: stripHeight)
             .contentShape(Rectangle())
@@ -664,6 +694,21 @@ private struct FilmstripView: View {
             .frame(width: 10, height: stripHeight)
             .shadow(radius: 2)
             .accessibilityHidden(true)
+    }
+
+    private var playheadMark: some View {
+        VStack(spacing: 0) {
+            Circle()
+                .fill(Color.white)
+                .frame(width: 7, height: 7)
+
+            Rectangle()
+                .fill(Color.white)
+                .frame(width: 2)
+        }
+        .frame(height: stripHeight)
+        .shadow(radius: 1)
+        .accessibilityHidden(true)
     }
 
     private func x(for time: TimeInterval, width: CGFloat) -> CGFloat {

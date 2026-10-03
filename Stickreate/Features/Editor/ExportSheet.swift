@@ -178,6 +178,11 @@ struct ExportSheet: View {
     @MainActor
     private var mixedActions: some View {
         VStack(spacing: 12) {
+            Text("This pack has photos and videos. WhatsApp needs them as two separate packs.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
             exportButton(kind: .static, stickers: pack.staticStickers)
             exportButton(kind: .animated, stickers: pack.animatedStickers)
             whatsAppFootnote

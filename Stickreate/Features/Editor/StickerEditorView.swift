@@ -1003,13 +1003,13 @@ struct StickerEditorView: View {
         .transition(.opacity)
     }
 
-    /// `StickerCreationStage.label` already carries the exact copy and only puts
-    /// a percentage on the determinate stages; `.compressing` stays indeterminate.
+    /// `StickerCreationStage.label` already carries the exact copy and the
+    /// percentage for every determinate stage, `.compressing` included.
     private var applyProgressText: String {
         guard let stage = applyStage else { return "Preparing sticker…" }
         switch stage {
         case .loading: return "Preparing sticker…"
-        default: return stage.label
+        case .extracting, .cutting, .compressing, .saving, .done: return stage.label
         }
     }
 

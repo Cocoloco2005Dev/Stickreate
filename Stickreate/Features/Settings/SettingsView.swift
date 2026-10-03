@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Real, persisted settings backed by `SettingsStore.shared`. Every control
-/// changes app behaviour — no decorative toggles.
+/// Real, persisted settings backed by `SettingsStore.shared`. Only options that
+/// change app behaviour — no decorative toggles.
 struct SettingsView: View {
     @Bindable private var settings = SettingsStore.shared
 
@@ -10,20 +10,15 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Stepper(value: $settings.defaultFPS, in: 5...30) {
-                    LabeledContent("Default frame rate", value: "\(settings.defaultFPS) fps")
-                }
-
-                Toggle("Confirm Intelligent Cut", isOn: $settings.confirmIntelligentCut)
                 Toggle("Keep original sources", isOn: $settings.keepOriginalSources)
             } header: {
-                Text("Stickers")
+                Text("Editing")
             } footer: {
-                Text("The default frame rate is used when you trim a video. Keeping original sources lets you re-edit stickers later.")
+                Text("Keeps the original photo or video on this iPhone so you can re-open and re-edit a sticker later.")
             }
 
             Section {
-                Picker("Export mode", selection: $settings.exportMode) {
+                Picker("Export to", selection: $settings.exportMode) {
                     ForEach(ExportMode.allCases, id: \.self) { mode in
                         Text(mode.label).tag(mode)
                     }
@@ -31,11 +26,11 @@ struct SettingsView: View {
             } header: {
                 Text("Export")
             } footer: {
-                Text("WhatsApp sends the pack straight to WhatsApp. File shares a .stickreatepack you can send or import later.")
+                Text("WhatsApp sends the pack straight to the app. File shares a .stickreatepack you can send or import later.")
             }
 
             Section {
-                LabeledContent("Storage", value: settings.storageSummary)
+                LabeledContent("Storage used", value: settings.storageSummary)
 
                 Button("Clear Cache") {
                     clearCache()
@@ -49,7 +44,7 @@ struct SettingsView: View {
             } header: {
                 Text("Storage")
             } footer: {
-                Text("Clearing removes temporary files created while editing. Your packs are not touched.")
+                Text("Clearing removes temporary files created while editing. Your packs and originals are not touched.")
             }
 
             Section {
@@ -61,10 +56,12 @@ struct SettingsView: View {
                 Text("Stickers are created entirely on your iPhone. Intelligent Cut uses Apple's Vision framework on-device.")
             }
 
-            Section("About") {
+            Section {
                 LabeledContent("App", value: "Stickreate")
                 LabeledContent("Version", value: Bundle.main.shortVersion)
                 LabeledContent("Build", value: Bundle.main.buildNumber)
+            } header: {
+                Text("About")
             }
         }
         .navigationTitle("Settings")

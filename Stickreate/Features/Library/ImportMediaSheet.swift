@@ -24,14 +24,6 @@ struct ImportMediaSheet: View {
         var id: String { rawValue }
     }
 
-    /// Photos are static; videos and GIFs are animated.
-    private var incomingKind: StickerKind {
-        switch source {
-        case .image: .static
-        case .video, .gif: .animated
-        }
-    }
-
     private var mediaTypeLabel: String {
         switch source {
         case .image: "Photo"
@@ -70,7 +62,7 @@ struct ImportMediaSheet: View {
             .toolbar { toolbarContent }
         }
         .task { await loadPreview() }
-        .onAppear { selectFirstCompatiblePack() }
+        .onAppear { selectFirstPack() }
         .sheet(item: $editorTask, onDismiss: editorDismissed) { task in
             editor(for: task)
         }
@@ -191,8 +183,7 @@ struct ImportMediaSheet: View {
     }
 
     private func packRow(_ pack: StickerPack) -> some View {
-        let compatible = isCompatible(pack)
-        let isSelected = compatible && selectedPackID == pack.id
+        let isSelected = selectedPackID == pack.id
 
         return Button {
             selectedPackID = pack.id
@@ -208,12 +199,6 @@ struct ImportMediaSheet: View {
                     Text(packSummary(pack))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-
-                    if !compatible {
-                        Text(incompatibleReason)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
 
                 Spacer(minLength: 0)
@@ -227,9 +212,8 @@ struct ImportMediaSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!compatible)
         .accessibilityLabel("\(pack.name), \(packSummary(pack))")
-        .accessibilityHint(compatible ? "Selects this pack" : incompatibleReason)
+        .accessibilityHint("Selects this pack")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
@@ -254,29 +238,15 @@ struct ImportMediaSheet: View {
 
     // MARK: - Selection helpers
 
-    private func isCompatible(_ pack: StickerPack) -> Bool {
-        guard let kind = pack.kind else { return true }   // empty pack fits anything
-        return kind == incomingKind
-    }
-
-    private var incompatibleReason: String {
-        switch incomingKind {
-        case .static:
-            "This pack holds videos or GIFs. A pack can't mix photos with them."
-        case .animated:
-            "This pack holds photos. A pack can't mix videos or GIFs with them."
-        }
-    }
-
     private func packSummary(_ pack: StickerPack) -> String {
         let count = pack.stickers.count
         let countText = count == 1 ? "1 sticker" : "\(count) stickers"
         return "\(countText) · \(pack.kind?.label ?? "Empty")"
     }
 
-    private func selectFirstCompatiblePack() {
+    private func selectFirstPack() {
         guard selectedPackID == nil else { return }
-        if let pack = store.packs.first(where: { isCompatible($0) }) {
+        if let pack = store.packs.first {
             selectedPackID = pack.id
         }
     }
