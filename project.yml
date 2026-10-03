@@ -47,6 +47,18 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         ITSAppUsesNonExemptEncryption: false
         NSCameraUsageDescription: Take a photo to turn it into a sticker.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Image
+            LSItemContentTypes:
+              - public.image
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+          - CFBundleTypeName: Movie
+            LSItemContentTypes:
+              - public.movie
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+        LSSupportsOpeningDocumentsInPlace: true
         LSApplicationQueriesSchemes:
           - whatsapp
         UIApplicationSceneManifest:

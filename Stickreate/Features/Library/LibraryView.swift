@@ -5,7 +5,8 @@ import UniformTypeIdentifiers
 /// Pack library. Content layer — cards stay opaque and Liquid Glass lives in the
 /// navigation bar plus the single primary action of the empty state.
 struct LibraryView: View {
-    @State private var store = PackStore()
+    /// Shared with `RootView` so incoming media and the library see one store.
+    @State private var store = PackStore.shared
     @State private var settings = SettingsStore.shared
     @State private var path: [UUID] = []
     @State private var searchText = ""

@@ -60,6 +60,52 @@ enum StickerSourceStore {
         throw Failure.unsupported
     }
 
+    /// Imports a file shared/opened into the app, e.g. via `.onOpenURL`.
+    static func importFile(at url: URL) async throws -> StickerSource {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+        let ext = url.pathExtension.lowercased()
+        guard let type = UTType(filenameExtension: ext) else { throw Failure.unsupported }
+
+        if type.conforms(to: .movie) {
+            guard FileManager.default.fileExists(atPath: url.path) else { throw Failure.empty }
+            let destination = directory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(ext.isEmpty ? "mov" : ext)
+            try moveOrCopy(from: url, to: destination)
+            return .video(fileName: destination.lastPathComponent)
+        }
+
+        if type.conforms(to: .gif) {
+            let data: Data
+            do {
+                data = try Data(contentsOf: url)
+            } catch {
+                throw Failure.failed(error.localizedDescription)
+            }
+            let destination = directory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("gif")
+            do {
+                try data.write(to: destination, options: .atomic)
+            } catch {
+                throw Failure.failed(error.localizedDescription)
+            }
+            return .gif(fileName: destination.lastPathComponent)
+        }
+
+        if type.conforms(to: .image) {
+            guard let data = try? Data(contentsOf: url), !data.isEmpty else {
+                throw Failure.empty
+            }
+            guard let image = UIImage(data: data) else { throw Failure.unsupported }
+            return try saveImage(image, id: UUID())
+        }
+
+        throw Failure.unsupported
+    }
+
     /// Saves an upright still image as a source file.
     static func saveImage(_ image: UIImage, id: UUID) throws -> StickerSource {
         let upright = image.upNormalized() ?? image

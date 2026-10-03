@@ -4,6 +4,9 @@ import Foundation
 /// Owns the user's packs and persists them to disk in the app's Documents folder.
 @Observable
 final class PackStore {
+    /// One store shared by RootView and the library so they present the same data.
+    static let shared = PackStore()
+
     var packs: [StickerPack] = []
 
     private let fileURL: URL = {
