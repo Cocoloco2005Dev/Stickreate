@@ -2,6 +2,8 @@ import UIKit
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 /// Orchestrates: picked item → frames/image → background removal → encode → StickerItem.
 enum StickerFactory {
@@ -21,6 +23,9 @@ enum StickerFactory {
             }
         }
     }
+
+    /// Shared Core Image context for compositing video frames through the mask.
+    private static let ciContext = CIContext()
 
     /// Turns a picked photo, video, or GIF into a ready-to-use sticker.
     ///
@@ -112,7 +117,7 @@ enum StickerFactory {
               let previewData = StickerEncoder.previewPNG(from: image, size: 512) else {
             throw Failure.failed("Couldn't encode this sticker.")
         }
-        onStage?(.compressing(1))
+        onStage?(.compressing(1.0))
         onStage?(.saving)
         let item = StickerItem(
             kind: .static,
@@ -268,6 +273,7 @@ enum StickerFactory {
         let encodeMs = (CFAbsoluteTimeGetCurrent() - encodeStarted) * 1000
         print(String(format: "[StickerFactory] encode %d frames in %.0fms (%d bytes)", usable.count, encodeMs, stickerData.count))
         #endif
+        onStage?(.compressing(1.0))
         onStage?(.saving)
         let item = StickerItem(
             kind: .animated,
@@ -280,61 +286,80 @@ enum StickerFactory {
         return item
     }
 
-    /// Background-removes every frame with bounded concurrency (Vision is the
-    /// heavy stage), preserving frame order. Returns nil when the first frame
+    /// Applies a single Vision subject mask to every frame, so the animated
+    /// cutout can't flicker. The mask is computed once from the middle frame
+    /// (a representative pose) and composited onto each frame. All frames share
+    /// dimensions, so the mask applies directly. Returns nil when the mask step
     /// fails, signalling the caller to use the original frames.
     ///
-    /// `onProgress` maps each frame's Vision progress into the overall `0...1`.
+    /// `onProgress` is the single Vision pass mapped into `0...1`.
     private static func cutOut(_ frames: [Frame], onProgress: ((Double) -> Void)? = nil) async -> [Frame]? {
-        guard let first = frames.first else { return nil }
-        let total = Double(frames.count)
+        guard !frames.isEmpty else { return nil }
+        let representative = frames[frames.count / 2]
 
-        func mapped(_ index: Int, _ fraction: Double) -> Double {
-            (Double(index) + min(max(fraction, 0), 1)) / total
-        }
-
-        guard let firstCut = try? await BackgroundRemover.removeBackground(
-            from: first.image,
-            progress: { onProgress?(mapped(0, $0)) }
+        onProgress?(0)
+        guard let extraction = try? await BackgroundRemover.extractSubject(
+            from: representative.image,
+            progress: { onProgress?($0) }
         ) else {
             onProgress?(1)
             return nil
         }
+        onProgress?(1)
 
-        var cut: [UIImage?] = Array(repeating: nil, count: frames.count)
-        cut[0] = firstCut
-        let maxInFlight = 3
+        // No detected subject means a blank mask; fall back to the original
+        // frames rather than producing an empty cutout.
+        guard !extraction.instances.isEmpty else { return nil }
 
+        // Composite every frame through the same mask, off the caller's actor
+        // (this may be the main actor) with bounded concurrency. Order is kept.
+        let mask = extraction.mask
+        var result = [Frame](repeating: frames[0], count: frames.count)
         await withTaskGroup(of: (Int, UIImage?).self) { group in
-            var nextIndex = 1
+            var nextIndex = 0
             var inFlight = 0
-
+            let maxInFlight = 4
             while nextIndex < frames.count || inFlight > 0 {
                 while nextIndex < frames.count, inFlight < maxInFlight {
                     let index = nextIndex
                     let image = frames[index].image
-                    group.addTask {
-                        let result = try? await BackgroundRemover.removeBackground(
-                            from: image,
-                            progress: { onProgress?(mapped(index, $0)) }
-                        )
-                        return (index, result)
-                    }
+                    group.addTask { (index, composite(image, through: mask)) }
                     nextIndex += 1
                     inFlight += 1
                 }
-                if let (index, image) = await group.next() {
-                    cut[index] = image ?? frames[index].image
+                if let (index, composed) = await group.next() {
+                    result[index] = Frame(image: composed ?? frames[index].image, duration: frames[index].duration)
                     inFlight -= 1
                 }
             }
         }
-
-        let result = (0..<frames.count).map { index in
-            Frame(image: cut[index] ?? frames[index].image, duration: frames[index].duration)
-        }
-        onProgress?(1)
         return result
+    }
+
+    /// Composites `image` through a single-channel grayscale `mask` (white =
+    /// keep) onto a transparent background. The mask is scaled to the image
+    /// extent if their pixel sizes differ.
+    private static func composite(_ image: UIImage, through mask: CGImage) -> UIImage? {
+        guard let base = CIImage(image: image) else { return nil }
+        var maskImage = CIImage(cgImage: mask)
+        if maskImage.extent.width > 0, maskImage.extent.height > 0,
+           maskImage.extent.size != base.extent.size {
+            maskImage = maskImage.transformed(by: CGAffineTransform(
+                scaleX: base.extent.width / maskImage.extent.width,
+                y: base.extent.height / maskImage.extent.height
+            ))
+        }
+        let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0))
+            .cropped(to: base.extent)
+        let filter = CIFilter.blendWithMask()
+        filter.inputImage = base
+        filter.backgroundImage = clear
+        filter.maskImage = maskImage
+        guard let output = filter.outputImage,
+              let cgImage = ciContext.createCGImage(output, from: base.extent) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage)
     }
 
     // MARK: - Loading

@@ -36,6 +36,8 @@ struct VideoTrimView: View {
     @State private var player: AVPlayer?
     @State private var isPlaying = false
     @State private var timeObserver: Any?
+    /// Fires when playback crosses `upperBound`, so it can loop back to `lowerBound`.
+    @State private var loopObserver: Any?
     @State private var playheadImage: UIImage?
     @State private var thumbTask: Task<Void, Never>?
 
@@ -85,6 +87,7 @@ struct VideoTrimView: View {
         }
         .preferredColorScheme(.dark)
         .task { await load() }
+        .onChange(of: upperBound) { _, _ in installLoopObserver() }
         .onDisappear { teardownPlayer() }
         .alert(
             "Couldn't create sticker",
@@ -161,7 +164,9 @@ struct VideoTrimView: View {
                 Text(loadErrorMessage ?? "Try choosing a different video.")
             } actions: {
                 Button("Try Again") { retry() }
+                    .buttonStyle(.glassProminent)
                 Button("Close") { dismiss() }
+                    .buttonStyle(.glass)
             }
         }
     }
@@ -208,63 +213,44 @@ struct VideoTrimView: View {
         .accessibilityHint("Plays the video preview")
     }
 
-    /// Playback scrubber under the preview: shows and sets the current position.
-    private func scrubberRow(showPlay: Bool) -> some View {
+    /// Compact transport under the preview: play/pause plus the time readout.
+    /// The filmstrip's moving playhead is the position indicator — no linear
+    /// scrubber bar.
+    private func transportRow(showPlay: Bool) -> some View {
         HStack(spacing: 12) {
             if showPlay {
-                Button {
-                    togglePlayback()
-                } label: {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isPlaying ? "Pause" : "Play")
+                playPauseButton
             }
 
-            Text(timeString(playhead))
-                .font(.caption.monospacedDigit().weight(.semibold))
+            Text("\(timeString(playhead)) / \(timeString(duration))")
+                .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.white)
-                .frame(width: 44, alignment: .leading)
-
-            Slider(value: scrubBinding, in: 0...max(duration, 0.01))
-                .tint(.white)
                 .accessibilityLabel("Playback position")
-                .accessibilityValue(Text("\(timeString(playhead)) of \(timeString(duration))"))
+                .accessibilityValue("\(timeString(playhead)) of \(timeString(duration))")
 
-            Text(timeString(duration))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .trailing)
+            Spacer(minLength: 0)
         }
     }
 
-    private var scrubBinding: Binding<Double> {
-        Binding(
-            get: { min(max(playhead, 0), max(duration, 0.01)) },
-            set: { value in
-                if isPlaying {
-                    player?.pause()
-                    isPlaying = false
-                }
-                playhead = value
-                player?.seek(
-                    to: CMTime(seconds: value, preferredTimescale: 600),
-                    toleranceBefore: .zero,
-                    toleranceAfter: .zero
-                )
-            }
-        )
+    private var playPauseButton: some View {
+        Button {
+            togglePlayback()
+        } label: {
+            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isPlaying ? "Pause" : "Play")
     }
 
     // MARK: - Bottom panel
 
     private var bottomPanel: some View {
         VStack(spacing: 12) {
-            scrubberRow(showPlay: false)
+            transportRow(showPlay: false)
             selectionReadout
             filmstripView
 
@@ -327,7 +313,7 @@ struct VideoTrimView: View {
 
     private var cropControls: some View {
         VStack(spacing: 12) {
-            scrubberRow(showPlay: true)
+            transportRow(showPlay: true)
 
             HStack(spacing: 12) {
                 Text("Drag to frame the crop. It applies to every frame.")
@@ -461,8 +447,14 @@ struct VideoTrimView: View {
                 forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
                 queue: .main
             ) { time in
-                playhead = CMTimeGetSeconds(time)
+                let seconds = CMTimeGetSeconds(time)
+                guard seconds.isFinite else { return }
+                // Keep the marker inside the selected range so it never reads as
+                // playing outside the choice.
+                playhead = min(max(seconds, lowerBound), upperBound)
             }
+
+            installLoopObserver()
 
             isLoading = false
             _ = await player.seek(
@@ -490,8 +482,32 @@ struct VideoTrimView: View {
             player.removeTimeObserver(timeObserver)
         }
         timeObserver = nil
+        if let loopObserver, let player {
+            player.removeTimeObserver(loopObserver)
+        }
+        loopObserver = nil
         thumbTask?.cancel()
         thumbTask = nil
+    }
+
+    /// Re-arms the loop boundary at the current `upperBound`. The observer seeks
+    /// back to `lowerBound` and keeps playing when playback crosses the end of
+    /// the selection, so the preview never runs past the chosen range.
+    private func installLoopObserver() {
+        guard let player else { return }
+        if let loopObserver {
+            player.removeTimeObserver(loopObserver)
+            self.loopObserver = nil
+        }
+        let boundary = NSValue(time: CMTime(seconds: upperBound, preferredTimescale: 600))
+        loopObserver = player.addBoundaryTimeObserver(forTimes: [boundary], queue: .main) { [weak player] in
+            guard let player, isPlaying else { return }
+            player.seek(
+                to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+        }
     }
 
     /// Streams filmstrip frames in the background; the UI never waits on them.
@@ -1001,18 +1017,20 @@ private struct FilmstripView: View {
             .accessibilityHidden(true)
     }
 
+    /// Thin vertical line at the current playback position, tinted with the accent
+    /// so it reads apart from the white selection window.
     private var playheadMark: some View {
         VStack(spacing: 0) {
             Circle()
-                .fill(Color.white)
-                .frame(width: 7, height: 7)
+                .fill(Color.accentColor)
+                .frame(width: 8, height: 8)
 
             Rectangle()
-                .fill(Color.white)
+                .fill(Color.accentColor)
                 .frame(width: 2)
         }
         .frame(height: stripHeight)
-        .shadow(radius: 1)
+        .shadow(color: .black.opacity(0.6), radius: 2)
         .accessibilityHidden(true)
     }
 

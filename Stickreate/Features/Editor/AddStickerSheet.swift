@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import PhotosUI
 import AVFoundation
+import UniformTypeIdentifiers
 
 /// Adds stickers to a pack. Picked photos, videos, and GIFs land in a queue;
 /// tapping a row opens its editor, and "Add N" commits everything. Items left
@@ -16,6 +17,7 @@ struct AddStickerSheet: View {
     @State private var pickerSelection: [PhotosPickerItem] = []
     @State private var queue: [QueueItem] = []
 
+    @State private var showingFileImporter = false
     @State private var isImporting = false
     @State private var isProcessing = false
     @State private var currentStage: StickerCreationStage?
@@ -40,6 +42,29 @@ struct AddStickerSheet: View {
         UIImagePickerController.isSourceTypeAvailable(.camera)
     }
 
+    /// The photo picker only offers media that matches the pack's kind, so a static
+    /// pack can't take a video and an animated pack can't take a still. Empty packs
+    /// accept everything. GIFs are images, so they ride along only while the pack is
+    /// empty (an animated pack prefers videos and live photos).
+    private var pickerFilter: PHPickerFilter {
+        guard let pack, let kind = pack.kind else {
+            return .any(of: [.images, .videos, .livePhotos])
+        }
+        switch kind {
+        case .static: return .images
+        case .animated: return .any(of: [.videos, .livePhotos])
+        }
+    }
+
+    /// Step 1 of "How it works", matching the picker's kind filter.
+    private var howToPickText: String {
+        guard let pack, let kind = pack.kind else { return "Pick photos, videos, or GIFs" }
+        switch kind {
+        case .static: return "Pick photos"
+        case .animated: return "Pick videos"
+        }
+    }
+
     private struct QueueItem: Identifiable {
         let id = UUID()
         let source: StickerSource
@@ -61,6 +86,7 @@ struct AddStickerSheet: View {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
                             .disabled(isProcessing)
+                            .tint(Color.accentColor)
                     }
                     // No Add action until there is something in the queue.
                     if !queue.isEmpty {
@@ -90,6 +116,13 @@ struct AddStickerSheet: View {
         }
         .onChange(of: pickerSelection) { _, newItems in
             importPicked(newItems)
+        }
+        .fileImporter(
+            isPresented: $showingFileImporter,
+            allowedContentTypes: [.image, .movie, .gif],
+            allowsMultipleSelection: true
+        ) { result in
+            handleFileImport(result)
         }
         .alert(
             "Something went wrong",
@@ -191,12 +224,20 @@ struct AddStickerSheet: View {
             PhotosPicker(
                 selection: $pickerSelection,
                 maxSelectionCount: remaining,
-                matching: .any(of: [.images, .videos, .livePhotos])
+                matching: pickerFilter
             ) {
                 actionTile("Photos", systemImage: "photo.on.rectangle.angled")
             }
             .buttonStyle(.glassProminent)
-            .accessibilityLabel("Choose photos or videos")
+            .accessibilityLabel("Choose from your photo library")
+
+            Button {
+                showingFileImporter = true
+            } label: {
+                actionTile("Files", systemImage: "folder")
+            }
+            .buttonStyle(.glass)
+            .accessibilityLabel("Import from Files")
 
             if isCameraAvailable {
                 Button {
@@ -249,7 +290,7 @@ struct AddStickerSheet: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            howToStep(1, "Pick photos, videos, or GIFs")
+            howToStep(1, howToPickText)
             howToStep(2, "Edit or trim each item")
             howToStep(3, "Tap Add to save them to the pack")
         }
@@ -317,30 +358,49 @@ struct AddStickerSheet: View {
     }
 
     private var queueHeader: some View {
-        HStack(spacing: 12) {
-            Text("\(queue.count) \(queue.count == 1 ? "item" : "items")")
-                .font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(queue.count) \(queue.count == 1 ? "item" : "items") to add")
+                    .font(.subheadline.weight(.semibold))
 
-            Spacer(minLength: 0)
-
-            if available > 0 && !isProcessing {
-                PhotosPicker(
-                    selection: $pickerSelection,
-                    maxSelectionCount: available,
-                    matching: .any(of: [.images, .videos, .livePhotos])
-                ) {
-                    Label("Add more", systemImage: "plus")
-                }
-                .buttonStyle(.glass)
-                .accessibilityLabel("Add more photos or videos")
+                Text("Tap an item to open its editor. Anything you leave unedited is added with defaults.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            if isCameraAvailable && !isProcessing {
-                cameraIconButton
+            if !isProcessing {
+                HStack(spacing: 10) {
+                    if available > 0 {
+                        PhotosPicker(
+                            selection: $pickerSelection,
+                            maxSelectionCount: available,
+                            matching: pickerFilter
+                        ) {
+                            Label("Photos", systemImage: "photo.on.rectangle")
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("Add more photos or videos")
+
+                        Button {
+                            showingFileImporter = true
+                        } label: {
+                            Label("Add from Files", systemImage: "folder")
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("Add media from Files")
+                    }
+
+                    if isCameraAvailable {
+                        cameraIconButton
+                    }
+
+                    Spacer(minLength: 0)
+                }
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
     }
 
     private var cameraIconButton: some View {
@@ -456,6 +516,32 @@ struct AddStickerSheet: View {
     private func importPicked(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
         Task { await importSources(items) }
+    }
+
+    private func handleFileImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            Task { await importFiles(urls) }
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func importFiles(_ urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        isImporting = true
+        defer { isImporting = false }
+
+        for url in urls {
+            guard queue.count < remaining else { break }
+            do {
+                let source = try await StickerSourceStore.importFile(at: url)
+                queue.append(QueueItem(source: source))
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     @MainActor

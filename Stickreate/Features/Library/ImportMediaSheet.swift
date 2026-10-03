@@ -86,6 +86,7 @@ struct ImportMediaSheet: View {
         ToolbarItem(placement: .cancellationAction) {
             Button("Cancel") { onDone() }
                 .disabled(isBusy)
+                .tint(Color.accentColor)
         }
 
         if let pack = selectedPack {

@@ -13,8 +13,17 @@ struct LibraryView: View {
     @State private var folderFilter: FolderFilter = .all
     @State private var showingImporter = false
     @State private var importError: String?
+    @State private var showingMediaImporter = false
+    @State private var importedMedia: ImportedMedia?
+    @State private var isImportingMedia = false
 
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
+
+    /// Wrapper so `.sheet(item:)` can present a media source chosen from Files.
+    private struct ImportedMedia: Identifiable {
+        let id = UUID()
+        let source: StickerSource
+    }
 
     private enum FolderFilter: Hashable {
         case all
@@ -52,6 +61,26 @@ struct LibraryView: View {
                 allowsMultipleSelection: false
             ) { result in
                 handleImport(result)
+            }
+            .fileImporter(
+                isPresented: $showingMediaImporter,
+                allowedContentTypes: [.image, .movie, .gif],
+                allowsMultipleSelection: false
+            ) { result in
+                handleMediaImport(result)
+            }
+            .sheet(item: $importedMedia) { media in
+                ImportMediaSheet(source: media.source, store: store) {
+                    importedMedia = nil
+                }
+            }
+            .overlay {
+                if isImportingMedia {
+                    ProgressView("Importing…")
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(.ultraThinMaterial)
+                }
             }
             .alert(
                 "Import failed",
@@ -146,6 +175,15 @@ struct LibraryView: View {
 
         ToolbarItem(placement: .topBarTrailing) {
             Button {
+                showingMediaImporter = true
+            } label: {
+                Label("Import from Files", systemImage: "folder.badge.plus")
+            }
+            .accessibilityLabel("Import photos or videos from Files")
+        }
+
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
                 showingImporter = true
             } label: {
                 Label("Import Pack", systemImage: "square.and.arrow.down")
@@ -175,6 +213,10 @@ struct LibraryView: View {
                 createPack()
             }
             .buttonStyle(.glassProminent)
+
+            Button("Import from Files", systemImage: "folder.badge.plus") {
+                showingMediaImporter = true
+            }
 
             Button("Import a Pack", systemImage: "square.and.arrow.down") {
                 showingImporter = true
@@ -279,6 +321,33 @@ struct LibraryView: View {
 
         case .failure(let error):
             importError = error.localizedDescription
+        }
+    }
+
+    /// Files import path: reliable when the OS share/open-in doesn't route into the
+    /// app (e.g. LiveContainer). Imports the file, then offers the destination
+    /// picker via `ImportMediaSheet`.
+    private func handleMediaImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            Task { await importMediaFile(url) }
+        case .failure(let error):
+            importError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func importMediaFile(_ url: URL) async {
+        isImportingMedia = true
+        defer { isImportingMedia = false }
+
+        do {
+            let source = try await StickerSourceStore.importFile(at: url)
+            importedMedia = ImportedMedia(source: source)
+        } catch {
+            importError = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
         }
     }
 }

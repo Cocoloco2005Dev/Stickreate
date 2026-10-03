@@ -12,8 +12,9 @@ import QuartzCore
 @MainActor
 @Observable
 final class MaskEditor {
-    /// Upright original image, downscaled to the `maxDimension` cap.
-    let base: UIImage
+    /// Upright original image, downscaled to the `maxDimension` cap. Baked by
+    /// `applyCrop(_:)`, which is why it is settable within the type.
+    private(set) var base: UIImage
     /// `base` composited through the current mask.
     private(set) var preview: UIImage
 
@@ -26,21 +27,43 @@ final class MaskEditor {
     var canUndo: Bool { !undoStack.isEmpty }
     var canRedo: Bool { !redoStack.isEmpty }
 
-    private let pixelWidth: Int
-    private let pixelHeight: Int
+    private var pixelWidth: Int
+    private var pixelHeight: Int
     private var maskData: [UInt8]
-    /// All-white mask (keep everything).
-    private let whiteMask: [UInt8]
+    /// All-white mask (keep everything), matching the current pixel size.
+    private var whiteMask: [UInt8]
     /// Vision's subject mask, when one was supplied.
-    private let subjectMask: [UInt8]?
+    private var subjectMask: [UInt8]?
     /// Whether the subject cut-out is currently in use.
     private var backgroundRemoved: Bool
     /// Vision's per-instance masks keyed by 1-based instance id, in editor pixels.
     private var instanceMasks: [Int: [UInt8]] = [:]
     /// Selected instance ids; empty means the whole image is kept.
     private(set) var selectedInstanceIDs: Set<Int> = []
-    private var undoStack: [[UInt8]] = []
-    private var redoStack: [[UInt8]] = []
+    private var undoStack: [Snapshot] = []
+    private var redoStack: [Snapshot] = []
+
+    /// Everything `applyCrop` can change, so `undo` can restore the pre-crop
+    /// editor. The base image and instance-mask arrays are reference/COW-backed,
+    /// so a snapshot is cheap.
+    private struct Snapshot {
+        let maskData: [UInt8]
+        let base: UIImage
+        let pixelWidth: Int
+        let pixelHeight: Int
+        let subjectMask: [UInt8]?
+        let instanceMasks: [Int: [UInt8]]
+        let selectedInstanceIDs: Set<Int>
+        let backgroundRemoved: Bool
+        let hasSubject: Bool
+
+        /// Total mask bytes held by this snapshot, for the undo memory cap.
+        var byteCount: Int {
+            maskData.count
+                + (subjectMask?.count ?? 0)
+                + instanceMasks.values.reduce(0) { $0 + $1.count }
+        }
+    }
 
     /// Guards against out-of-order preview publishes during fast strokes.
     private var previewGeneration = 0
@@ -119,10 +142,28 @@ final class MaskEditor {
                 context.draw(instance.mask, in: CGRect(x: 0, y: 0, width: width, height: height))
             }
         }
-        return MaskCompositor.maskCGImage(bytes: bytes, width: width, height: height)
+        let cleaned = MaskCompositor.cleanMask(bytes, width: width, height: height)
+        return MaskCompositor.maskCGImage(bytes: cleaned, width: width, height: height)
     }
 
     // MARK: - Editing
+
+    // MARK: Coordinates
+    //
+    // The single Y convention for the whole editor: a normalized point uses a
+    // TOP-LEFT origin (0,0 = top-left of `base`), and `maskData` is a top-left
+    // row-major buffer (row 0 = top row). `pixelPoint(_:)` is the one place that
+    // converts normalized -> pixel; `stroke`, `selectRectangle`, `selectLasso`
+    // and `instanceID(at:)` all go through it so a point lands on the same pixel
+    // in every tool. Do not hand-roll `1 - y` anywhere.
+
+    /// Normalized top-left point (0...1) -> pixel coordinate in `maskData`.
+    private func pixelPoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, 0), 1) * CGFloat(pixelWidth),
+            y: min(max(point.y, 0), 1) * CGFloat(pixelHeight)
+        )
+    }
 
     /// Snapshots the mask so the following stroke can be undone as one step.
     func beginStroke() {
@@ -136,8 +177,8 @@ final class MaskEditor {
         let radius = fraction * CGFloat(min(pixelWidth, pixelHeight))
         let value: UInt8 = restoring ? 255 : 0
 
-        let start = CGPoint(x: from.x * CGFloat(pixelWidth), y: from.y * CGFloat(pixelHeight))
-        let end = CGPoint(x: to.x * CGFloat(pixelWidth), y: to.y * CGFloat(pixelHeight))
+        let start = pixelPoint(from)
+        let end = pixelPoint(to)
         let dx = end.x - start.x
         let dy = end.y - start.y
         let distance = (dx * dx + dy * dy).squareRoot()
@@ -160,58 +201,79 @@ final class MaskEditor {
 
     func undo() {
         guard let previous = undoStack.popLast() else { return }
-        redoStack.append(maskData)
-        maskData = previous
+        redoStack.append(makeSnapshot())
+        restore(previous)
         refreshPreview()
     }
 
     func redo() {
         guard let next = redoStack.popLast() else { return }
-        undoStack.append(maskData)
-        maskData = next
+        undoStack.append(makeSnapshot())
+        restore(next)
         refreshPreview()
     }
 
     /// Fills a normalized top-left rect. `removing == true` paints black
-    /// (remove); `false` paints white (keep).
+    /// (remove); `false` paints white (keep). Uses the shared top-left
+    /// coordinate convention, so it lands exactly where the brush would.
     func selectRectangle(_ rect: CGRect, removing: Bool) {
+        let topLeft = pixelPoint(CGPoint(x: rect.minX, y: rect.minY))
+        let bottomRight = pixelPoint(CGPoint(x: rect.maxX, y: rect.maxY))
+        let x0 = max(0, Int(topLeft.x.rounded(.down)))
+        let y0 = max(0, Int(topLeft.y.rounded(.down)))
+        let x1 = min(pixelWidth, Int(bottomRight.x.rounded(.up)))
+        let y1 = min(pixelHeight, Int(bottomRight.y.rounded(.up)))
+        guard x1 > x0, y1 > y0 else { return }
+
         pushUndo()
-        rasterize { context in
-            context.setFillColor(gray: removing ? 0 : 1, alpha: 1)
-            context.fill(CGRect(
-                x: rect.minX * CGFloat(pixelWidth),
-                y: (1 - rect.maxY) * CGFloat(pixelHeight),
-                width: rect.width * CGFloat(pixelWidth),
-                height: rect.height * CGFloat(pixelHeight)
-            ))
+        let value: UInt8 = removing ? 0 : 255
+        for y in y0..<y1 {
+            let row = y * pixelWidth
+            for x in x0..<x1 {
+                maskData[row + x] = value
+            }
         }
         refreshPreview()
     }
 
     /// Fills a normalized top-left polygon (at least three points). Same
-    /// keep/remove semantics as `selectRectangle`.
+    /// keep/remove semantics and coordinate convention as `selectRectangle`.
     func selectLasso(_ points: [CGPoint], removing: Bool) {
         guard points.count >= 3 else { return }
+        let polygon = points.map(pixelPoint)
+        let minX = max(0, Int((polygon.map(\.x).min() ?? 0).rounded(.down)))
+        let maxX = min(pixelWidth - 1, Int((polygon.map(\.x).max() ?? 0).rounded(.up)))
+        let minY = max(0, Int((polygon.map(\.y).min() ?? 0).rounded(.down)))
+        let maxY = min(pixelHeight - 1, Int((polygon.map(\.y).max() ?? 0).rounded(.up)))
+        guard maxX >= minX, maxY >= minY else { return }
+
         pushUndo()
-        rasterize { context in
-            context.setFillColor(gray: removing ? 0 : 1, alpha: 1)
-            let path = CGMutablePath()
-            for (index, point) in points.enumerated() {
-                let mapped = CGPoint(
-                    x: point.x * CGFloat(pixelWidth),
-                    y: (1 - point.y) * CGFloat(pixelHeight)
-                )
-                if index == 0 {
-                    path.move(to: mapped)
-                } else {
-                    path.addLine(to: mapped)
+        let value: UInt8 = removing ? 0 : 255
+        for y in minY...maxY {
+            let row = y * pixelWidth
+            for x in minX...maxX {
+                if pointInPolygon(polygon, x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5) {
+                    maskData[row + x] = value
                 }
             }
-            path.closeSubpath()
-            context.addPath(path)
-            context.fillPath()
         }
         refreshPreview()
+    }
+
+    /// Even-odd point-in-polygon test in pixel space (top-left row-major).
+    private func pointInPolygon(_ polygon: [CGPoint], x: CGFloat, y: CGFloat) -> Bool {
+        var inside = false
+        var j = polygon.count - 1
+        for i in 0..<polygon.count {
+            let a = polygon[i]
+            let b = polygon[j]
+            if (a.y > y) != (b.y > y),
+               x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x {
+                inside.toggle()
+            }
+            j = i
+        }
+        return inside
     }
 
     /// Rebuilds the keep mask as the union of the selected instances' masks.
@@ -241,8 +303,9 @@ final class MaskEditor {
     /// origin), or `nil` over the background. Ties go to the strongest coverage.
     func instanceID(at point: CGPoint) -> Int? {
         guard !instanceMasks.isEmpty, pixelWidth > 0, pixelHeight > 0 else { return nil }
-        let x = min(pixelWidth - 1, Int(min(max(point.x, 0), 1) * CGFloat(pixelWidth)))
-        let y = min(pixelHeight - 1, Int(min(max(point.y, 0), 1) * CGFloat(pixelHeight)))
+        let pixel = pixelPoint(point)
+        let x = min(pixelWidth - 1, max(0, Int(pixel.x)))
+        let y = min(pixelHeight - 1, max(0, Int(pixel.y)))
         let index = y * pixelWidth + x
         var best: (id: Int, value: UInt8)?
         for (id, mask) in instanceMasks where index < mask.count {
@@ -275,6 +338,49 @@ final class MaskEditor {
         maskData = backgroundRemoved ? (subjectMask ?? whiteMask) : whiteMask
         undoStack.removeAll()
         redoStack.removeAll()
+        refreshPreview()
+    }
+
+    /// Bakes a normalized top-left crop into `base`, the mask (and subject /
+    /// instance masks), and the pixel dimensions, then keeps editing normally.
+    /// Pushes an undo step, so `undo()` restores the full pre-crop state.
+    ///
+    /// The caller should clear its own pending crop rect afterwards; the editor
+    /// holds no crop state of its own.
+    func applyCrop(_ rect: CGRect) {
+        let clamped = rect.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let topLeft = pixelPoint(CGPoint(x: clamped.minX, y: clamped.minY))
+        let bottomRight = pixelPoint(CGPoint(x: clamped.maxX, y: clamped.maxY))
+        let x0 = max(0, Int(topLeft.x.rounded(.down)))
+        let y0 = max(0, Int(topLeft.y.rounded(.down)))
+        let x1 = min(pixelWidth, Int(bottomRight.x.rounded(.up)))
+        let y1 = min(pixelHeight, Int(bottomRight.y.rounded(.up)))
+        let newWidth = x1 - x0
+        let newHeight = y1 - y0
+        guard newWidth > 0, newHeight > 0,
+              let croppedBase = MaskCompositor.crop(base, to: clamped) else { return }
+
+        pushUndo()
+        maskData = MaskCompositor.cropBytes(
+            maskData, width: pixelWidth, height: pixelHeight,
+            x: x0, y: y0, newWidth: newWidth, newHeight: newHeight
+        )
+        subjectMask = subjectMask.map {
+            MaskCompositor.cropBytes(
+                $0, width: pixelWidth, height: pixelHeight,
+                x: x0, y: y0, newWidth: newWidth, newHeight: newHeight
+            )
+        }
+        instanceMasks = instanceMasks.mapValues {
+            MaskCompositor.cropBytes(
+                $0, width: pixelWidth, height: pixelHeight,
+                x: x0, y: y0, newWidth: newWidth, newHeight: newHeight
+            )
+        }
+        base = croppedBase
+        pixelWidth = newWidth
+        pixelHeight = newHeight
+        whiteMask = [UInt8](repeating: 255, count: newWidth * newHeight)
         refreshPreview()
     }
 
@@ -327,34 +433,40 @@ final class MaskEditor {
         }
     }
 
+    private func makeSnapshot() -> Snapshot {
+        Snapshot(
+            maskData: maskData,
+            base: base,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            subjectMask: subjectMask,
+            instanceMasks: instanceMasks,
+            selectedInstanceIDs: selectedInstanceIDs,
+            backgroundRemoved: backgroundRemoved,
+            hasSubject: hasSubject
+        )
+    }
+
+    private func restore(_ snapshot: Snapshot) {
+        maskData = snapshot.maskData
+        base = snapshot.base
+        pixelWidth = snapshot.pixelWidth
+        pixelHeight = snapshot.pixelHeight
+        subjectMask = snapshot.subjectMask
+        instanceMasks = snapshot.instanceMasks
+        selectedInstanceIDs = snapshot.selectedInstanceIDs
+        backgroundRemoved = snapshot.backgroundRemoved
+        hasSubject = snapshot.hasSubject
+        whiteMask = [UInt8](repeating: 255, count: snapshot.pixelWidth * snapshot.pixelHeight)
+    }
+
     private func pushUndo() {
-        undoStack.append(maskData)
+        undoStack.append(makeSnapshot())
         while undoStack.count > maxUndoCount
-            || undoStack.reduce(0, { $0 + $1.count }) > maxUndoBytes {
+            || undoStack.reduce(0, { $0 + $1.byteCount }) > maxUndoBytes {
             undoStack.removeFirst()
         }
         redoStack.removeAll()
-    }
-
-    /// Draws into the mask buffer through a flipped gray `CGContext` so
-    /// normalized top-left coordinates line up with `maskData` (same Y-flip
-    /// convention as `seed`).
-    private func rasterize(_ draw: (CGContext) -> Void) {
-        maskData.withUnsafeMutableBytes { buffer in
-            guard let baseAddress = buffer.baseAddress,
-                  let context = CGContext(
-                      data: baseAddress,
-                      width: pixelWidth,
-                      height: pixelHeight,
-                      bitsPerComponent: 8,
-                      bytesPerRow: pixelWidth,
-                      space: CGColorSpaceCreateDeviceGray(),
-                      bitmapInfo: CGImageAlphaInfo.none.rawValue
-                  ) else { return }
-            context.translateBy(x: 0, y: CGFloat(pixelHeight))
-            context.scaleBy(x: 1, y: -1)
-            draw(context)
-        }
     }
 
     /// Refreshes the preview at most ~30 times per second during a stroke.
@@ -410,7 +522,124 @@ fileprivate enum MaskCompositor {
             ctx.interpolationQuality = .high
             ctx.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
         }
-        return bytes
+        return cleanMask(bytes, width: width, height: height)
+    }
+
+    /// Turns Vision's soft mask into a hard, halo-free keep mask: threshold at
+    /// 0.5, erode by 1 px to cut the soft fringe, then drop connected components
+    /// smaller than `minArea` (specks). Deterministic and O(pixels). Input and
+    /// output are top-left row-major buffers, same convention as `maskData`.
+    ///
+    /// Shared by the combined and per-instance seeds so every editable mask is
+    /// cleaned the same way.
+    static func cleanMask(_ bytes: [UInt8], width: Int, height: Int) -> [UInt8] {
+        guard width > 1, height > 1, bytes.count >= width * height else {
+            return bytes.map { $0 >= 128 ? 255 : 0 }
+        }
+        let count = width * height
+
+        // 1) Hard threshold.
+        var hard = [UInt8](repeating: 0, count: count)
+        for index in 0..<count {
+            hard[index] = bytes[index] >= 128 ? 255 : 0
+        }
+
+        // 2) Erode by 1 px: a keep pixel survives only if all four orthogonal
+        //    neighbours are keep. Removes the 1 px soft fringe that reads as halo.
+        var eroded = [UInt8](repeating: 0, count: count)
+        for y in 1..<(height - 1) {
+            let row = y * width
+            for x in 1..<(width - 1) {
+                let index = row + x
+                if hard[index] == 255,
+                   hard[index - 1] == 255, hard[index + 1] == 255,
+                   hard[index - width] == 255, hard[index + width] == 255 {
+                    eroded[index] = 255
+                }
+            }
+        }
+
+        // 3) Drop connected components smaller than `minArea` (tiny specks that
+        //    survived the erosion). The component buffer is capped at `minArea`
+        //    so a large blob never balloons memory. Small enough to keep legit
+        //    small subjects (a 5×5 blob survives at 3×3 = 9 px).
+        let minArea = 8
+        var cleaned = eroded
+        var visited = [Bool](repeating: false, count: count)
+        var stack: [Int] = []
+        stack.reserveCapacity(minArea * 4)
+        for start in 0..<count where eroded[start] == 255 && !visited[start] {
+            stack.removeAll(keepingCapacity: true)
+            var component: [Int] = []
+            var isSmall = true
+            stack.append(start)
+            visited[start] = true
+            while let index = stack.popLast() {
+                if isSmall {
+                    component.append(index)
+                    if component.count >= minArea {
+                        isSmall = false
+                        component.removeAll(keepingCapacity: true)
+                    }
+                }
+                let x = index % width
+                let y = index / width
+                for dy in -1...1 {
+                    let ny = y + dy
+                    guard ny >= 0, ny < height else { continue }
+                    for dx in -1...1 where dx != 0 || dy != 0 {
+                        let nx = x + dx
+                        guard nx >= 0, nx < width else { continue }
+                        let neighbour = ny * width + nx
+                        if eroded[neighbour] == 255 && !visited[neighbour] {
+                            visited[neighbour] = true
+                            stack.append(neighbour)
+                        }
+                    }
+                }
+            }
+            if isSmall {
+                for index in component { cleaned[index] = 0 }
+            }
+        }
+        return cleaned
+    }
+
+    /// Crops a normalized top-left rect out of `image` (pixel-exact).
+    static func crop(_ image: UIImage, to normalized: CGRect) -> UIImage? {
+        guard let cgImage = image.cgImage else { return nil }
+        let width = CGFloat(cgImage.width)
+        let height = CGFloat(cgImage.height)
+        let rect = CGRect(
+            x: normalized.minX * width,
+            y: normalized.minY * height,
+            width: normalized.width * width,
+            height: normalized.height * height
+        ).integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !rect.isEmpty, let cropped = cgImage.cropping(to: rect) else { return nil }
+        return UIImage(cgImage: cropped)
+    }
+
+    /// Crops a top-left row-major byte mask to `newWidth`×`newHeight` at `(x, y)`.
+    static func cropBytes(
+        _ bytes: [UInt8],
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        newWidth: Int,
+        newHeight: Int
+    ) -> [UInt8] {
+        guard newWidth > 0, newHeight > 0, x >= 0, y >= 0,
+              x + newWidth <= width, y + newHeight <= height,
+              bytes.count >= width * height else { return bytes }
+        var out = [UInt8](repeating: 0, count: newWidth * newHeight)
+        for row in 0..<newHeight {
+            let source = (y + row) * width + x
+            let destination = row * newWidth
+            out.replaceSubrange(destination..<(destination + newWidth), with: bytes[source..<(source + newWidth)])
+        }
+        return out
     }
 
     /// `base` where the mask is white, transparent where it is black.

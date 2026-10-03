@@ -38,6 +38,7 @@ struct StickerEditorView: View {
     @State private var magnifying = false
     @State private var showZoomHint = true
     @State private var didSetInitialZoom = false
+    @State private var canvasSize: CGSize = .zero
 
     // Brush
     @State private var lastPoint: CGPoint?
@@ -163,7 +164,14 @@ struct StickerEditorView: View {
             .contentShape(Rectangle())
             .gesture(dragGesture(editor: editor, frame: frame, canvas: size))
             .simultaneousGesture(magnifyGesture(canvas: size, imageSize: editor.base.size))
-            .onAppear { applyInitialZoom(canvas: size, imageSize: editor.base.size) }
+            .onAppear {
+                canvasSize = size
+                applyInitialZoom(canvas: size, imageSize: editor.base.size)
+            }
+            .onChange(of: size) { _, newSize in
+                canvasSize = newSize
+                applyInitialZoom(canvas: newSize, imageSize: editor.base.size)
+            }
         }
     }
 
@@ -522,6 +530,17 @@ struct StickerEditorView: View {
         cropActiveHandle = nil
     }
 
+    /// Bakes the current crop into the working image and keeps editing open.
+    /// Only the final Apply commits and dismisses.
+    private func applyCropNow() {
+        guard let editor, hasCrop else { return }
+        editor.applyCrop(cropRect)
+        resetCrop()
+        hasCommittedChange = true
+        applyInitialZoom(canvas: canvasSize, imageSize: editor.base.size, force: true)
+        flash("Crop applied")
+    }
+
     private func cropHandle(at point: CGPoint, in crop: CGRect) -> CropHandle {
         guard hasCrop else { return .new }
         let threshold: CGFloat = 44
@@ -582,12 +601,20 @@ struct StickerEditorView: View {
         }
     }
 
+    // MARK: - Coordinate convention
+    //
+    // `StickerGeometry` maps a canvas touch onto normalized 0...1 coordinates
+    // with a TOP-LEFT origin, against the exact displayed image rect (letterbox,
+    // zoom and pan included). `MaskEditor` (stroke, selectRectangle, selectLasso,
+    // instanceID(at:), render(croppedTo:), applyCrop) uses the SAME top-left
+    // convention, so no Y conversion is needed at this boundary.
+
     // MARK: - Geometry
 
     /// Fills the canvas at open so the image doesn't sit inside wide checkerboard
     /// margins, capped so extreme aspect ratios don't crop too aggressively.
-    private func applyInitialZoom(canvas: CGSize, imageSize: CGSize) {
-        guard !didSetInitialZoom,
+    private func applyInitialZoom(canvas: CGSize, imageSize: CGSize, force: Bool = false) {
+        guard force || !didSetInitialZoom,
               canvas.width > 0, canvas.height > 0,
               imageSize.width > 0, imageSize.height > 0 else { return }
         didSetInitialZoom = true
@@ -652,7 +679,7 @@ struct StickerEditorView: View {
             VStack(spacing: 6) {
                 brushRow
                 Text(activeTool == .brush
-                     ? "Brush keeps pixels (restore)."
+                     ? "Restore brings removed pixels back."
                      : "Erase removes pixels.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -661,26 +688,32 @@ struct StickerEditorView: View {
         case .rectangle, .lasso:
             VStack(spacing: 6) {
                 modeToggle
-                Text("Selection mode · Keep restores pixels, Remove erases them.")
+                Text("Applies to Rectangle and Lasso · Keep restores pixels, Remove erases them.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
 
         case .crop:
-            HStack(spacing: 12) {
-                Text("Drag to frame the image. The result is what gets saved.")
+            VStack(spacing: 8) {
+                Text("Frame the image, then Apply crop to bake it into the photo.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.center)
 
-                Spacer(minLength: 0)
+                HStack(spacing: 12) {
+                    Button("Reset") { resetCrop() }
+                        .buttonStyle(.glass)
+                        .frame(minHeight: 44)
+                        .disabled(!hasCrop)
+                        .accessibilityLabel("Reset crop")
 
-                Button("Reset") { resetCrop() }
-                    .buttonStyle(.glass)
-                    .frame(minHeight: 44)
-                    .disabled(!hasCrop)
-                    .accessibilityLabel("Reset crop")
+                    Button("Apply crop") { applyCropNow() }
+                        .buttonStyle(.glass)
+                        .frame(minHeight: 44)
+                        .disabled(!hasCrop)
+                        .accessibilityLabel("Apply crop to the working image")
+                }
             }
 
         case .aiCut:
@@ -697,10 +730,10 @@ struct StickerEditorView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                    Button("Use Brush") { select(.brush) }
+                    Button("Use Restore") { select(.brush) }
                         .buttonStyle(.glass)
                         .frame(minHeight: 44)
-                        .accessibilityLabel("Use the brush tool")
+                        .accessibilityLabel("Use the restore tool")
                 } else {
                     Text("Intelligent Cut finds subjects on-device with Apple Vision.")
                         .font(.caption)
@@ -722,7 +755,7 @@ struct StickerEditorView: View {
                 .foregroundStyle(.secondary)
 
             Slider(value: brushBinding, in: 0.02...0.3)
-                .accessibilityLabel("Brush size")
+                .accessibilityLabel("Paint size")
                 .accessibilityValue(Text(brushAccessibilityValue))
 
             Image(systemName: "circle.fill")
@@ -748,18 +781,22 @@ struct StickerEditorView: View {
         return Button {
             selectionMode = mode
         } label: {
-            Text(mode.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.primary)
-                .frame(maxWidth: .infinity, minHeight: 40)
-                .background {
-                    if selected {
-                        Capsule()
-                            .fill(Color(uiColor: .systemBackground))
-                            .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                    }
+            HStack(spacing: 6) {
+                Image(systemName: mode.symbol)
+                    .font(.footnote.weight(.semibold))
+                Text(mode.title)
+                    .font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(Color.primary)
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .background {
+                if selected {
+                    Capsule()
+                        .fill(Color(uiColor: .systemBackground))
+                        .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
                 }
-                .contentShape(Capsule())
+            }
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(mode.title) mode")
@@ -817,7 +854,8 @@ struct StickerEditorView: View {
     private var actionBar: some View {
         HStack(spacing: 8) {
             Button("Cancel") { cancel() }
-                .foregroundStyle(.secondary)
+                .fontWeight(.medium)
+                .foregroundStyle(Color.accentColor)
                 .frame(minWidth: 44, minHeight: 44, alignment: .leading)
 
             Spacer(minLength: 0)
@@ -1111,7 +1149,7 @@ struct StickerEditorView: View {
             case .lasso: "Lasso"
             case .crop: "Crop"
             case .original: "Original"
-            case .brush: "Brush"
+            case .brush: "Restore"
             case .erase: "Erase"
             }
         }
@@ -1141,6 +1179,13 @@ struct StickerEditorView: View {
         }
 
         var removing: Bool { self == .remove }
+
+        var symbol: String {
+            switch self {
+            case .keep: "checkmark.circle"
+            case .remove: "minus.circle"
+            }
+        }
 
         var color: Color {
             switch self {

@@ -20,30 +20,35 @@ enum StickerEncoder {
     /// Budget for animated stickers. WhatsApp enforces ~500 KB, so keep headroom.
     private static let animatedByteBudget = 450 * 1024
 
-    /// Short quality ladder for animated WebP. The first pass over this ladder
-    /// runs with libwebp's fast defaults; only the single best (smallest)
-    /// candidate is re-encoded with the slow settings.
-    private static let animatedQualities: [Double] = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3]
+    /// Short quality ladder (libwebp 0...100). The native animated encoder is
+    /// fast, so re-encoding at a few qualities is cheaper than dropping frames.
+    private static let animatedQualities: [Float] = [80, 65, 50, 35]
 
-    /// libwebp method/pass. Method 4 is the encoder default (fast); the slow
-    /// method/pass pair buys size at a large CPU cost, so it runs at most once.
-    private static let fastMethod = 4
-    private static let fastPass = 1
-    private static let escalatedMethod = 6
-    private static let escalatedPass = 10
+    /// libwebp animated method. Method 4 is the fast default; the native encoder
+    /// already exploits inter-frame redundancy, so an expensive method is not
+    /// worth the CPU here.
+    private static let animatedMethod = 4
 
-    /// Animated sticker from frames. Compresses hard on the full frame set first;
-    /// only if that can't fit the 450 KB budget does it drop frames (keeping ≥ 2).
+    /// Fallback per-frame settings (SDWebImageWebPCoder), used only if the
+    /// native C encoder returns nil so we never regress to no sticker.
+    private static let fallbackMethod = 4
+    private static let fallbackPass = 1
+
+    /// Animated sticker from frames, using libwebp's native `WebPAnimEncoder`
+    /// (inter-frame compression) via `WebPAnimationEncoder`.
+    ///
+    /// Runs the 450 KB budget check on the full frame set at a short quality
+    /// ladder first; only if every quality is over budget does it drop frames
+    /// (never below two). Falls back to the per-frame static encoder only when
+    /// the C encoder itself fails.
     ///
     /// The canvas stays exactly 512×512 (a WhatsApp requirement — dimensions are
     /// never reduced). Requires at least two frames; one frame is not a valid
     /// animated payload.
     ///
-    /// When `targetDuration` is provided, frame durations are rounded to whole
-    /// milliseconds that sum to `targetDuration`: libwebp stores each frame as
-    /// `int(duration * 1000)` (truncation), so integer milliseconds are the only
-    /// way the total animation length is exact. `onProgress` reports a `0...1`
-    /// fraction as compression candidates are tried.
+    /// When `targetDuration` is provided, frame durations are distributed as
+    /// whole milliseconds that sum to `targetDuration`. `onProgress` reports a
+    /// monotonic `0...1` fraction across frames and attempts, ending at 1.0.
     static func animatedSticker(
         from frames: [Frame],
         loopCount: Int = 0,
@@ -54,43 +59,65 @@ enum StickerEncoder {
         let prepared = prepare(frames)
         guard prepared.count >= 2 else { return nil }
 
-        let loop = UInt(max(0, loopCount))
-        let ladder = frameLadder(prepared)
+        let loop = max(0, loopCount)
 
-        // Rough attempt budget so progress advances monotonically: the full frame
-        // set first, then each frame-drop candidate.
-        let estimatedAttempts = max(1, (1 + ladder.count) * (animatedQualities.count + 1))
-        var completedAttempts = 0
+        // Full frame set first, then progressively fewer frames (never below 2).
+        var candidates: [[Frame]] = [prepared]
+        candidates.append(contentsOf: frameLadder(prepared))
 
-        func attemptProgress() {
-            completedAttempts += 1
-            onProgress?(min(0.99, Double(completedAttempts) / Double(estimatedAttempts)))
+        // Worst-case progress schedule: every candidate at every quality. Each
+        // attempt reports its per-frame fraction; the bar is clamped below 1.0
+        // and jumps to exactly 1.0 only once a payload is actually returned.
+        let plannedAttempts = max(1, candidates.count * animatedQualities.count)
+        var attempt = 0
+        func report(_ frameFraction: Double) {
+            let progress = (Double(attempt) + frameFraction) / Double(plannedAttempts)
+            onProgress?(min(0.999, progress))
         }
 
-        // Compress harder before dropping any frames.
-        if let data = encodeAnimated(
-            withTargetDurations(prepared, targetDuration: targetDuration),
-            loopCount: loop,
-            onAttempt: attemptProgress
-        ) {
-            onProgress?(1)
-            return data
-        }
+        #if DEBUG
+        let started = CFAbsoluteTimeGetCurrent()
+        #endif
 
-        // Quality alone wasn't enough: drop frames, never below two.
-        var attempted = Set<Int>([prepared.count])
-        for candidate in ladder {
-            guard candidate.count >= 2, attempted.insert(candidate.count).inserted else { continue }
-            if let data = encodeAnimated(
-                withTargetDurations(candidate, targetDuration: targetDuration),
-                loopCount: loop,
-                onAttempt: attemptProgress
-            ) {
-                onProgress?(1)
-                return data
+        for candidate in candidates {
+            let durations = targetMilliseconds(candidate, targetDuration: targetDuration)
+            let images = candidate.map(\.image)
+            for quality in animatedQualities {
+                let options = WebPAnimationEncoder.Options(
+                    quality: quality,
+                    method: animatedMethod,
+                    keyframeInterval: 10,
+                    loopCount: loop,
+                    minimizeSize: true
+                )
+                let data = WebPAnimationEncoder.encode(
+                    frames: images,
+                    durationsMs: durations,
+                    options: options,
+                    onProgress: report
+                ) ?? encodeAnimatedFallback(
+                    images: images,
+                    durationsMs: durations,
+                    loopCount: loop,
+                    quality: Double(quality) / 100.0
+                )
+                attempt += 1
+                if let data, data.count <= animatedByteBudget {
+                    #if DEBUG
+                    let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
+                    print("[StickerEncoder] animated q=\(Int(quality)) \(Int(ms.rounded()))ms -> \(data.count) bytes")
+                    #endif
+                    onProgress?(1.0)
+                    return data
+                }
             }
         }
-        onProgress?(1)
+
+        #if DEBUG
+        let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
+        print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms")
+        #endif
+        onProgress?(1.0)
         return nil
     }
 
@@ -132,95 +159,37 @@ enum StickerEncoder {
         return nil
     }
 
-    /// Encodes `frames` as animated WebP.
+    /// Fallback used only when the native C animated encoder returns nil.
     ///
-    /// Fast path first: walks the quality ladder with libwebp's fast method/pass
-    /// (method 4, 1 pass) and returns the first result within budget. Only if no
-    /// rung fits does it re-encode the single smallest candidate once with the
-    /// slow settings (method 6, 10 passes). Each attempt runs in its own
-    /// autorelease pool so peak memory stays flat. `onAttempt` fires once per
-    /// encode attempt for progress reporting.
-    private static func encodeAnimated(
-        _ frames: [Frame],
-        loopCount: UInt,
-        onAttempt: (() -> Void)? = nil
+    /// Reuses the previous per-frame static WebP path (no inter-frame
+    /// compression) so a libwebp failure degrades in size/speed but never in
+    /// correctness. Runs in its own autorelease pool. Durations carry the
+    /// sub-microsecond epsilon SDWebImageWebPCoder needs for exact
+    /// `int(duration * 1000)` truncation.
+    private static func encodeAnimatedFallback(
+        images: [UIImage],
+        durationsMs: [Int],
+        loopCount: Int,
+        quality: Double
     ) -> Data? {
-        let sdFrames = frames.map { SDImageFrame(image: $0.image, duration: $0.duration) }
-
-        var smallest: Data?
-        var smallestQuality: Double?
-
-        for quality in animatedQualities {
-            onAttempt?()
-            let data = encodeAnimated(
-                sdFrames,
-                loopCount: loopCount,
-                quality: quality,
-                method: fastMethod,
-                pass: fastPass
-            )
-            guard let data else { continue }
-            if data.count <= animatedByteBudget {
-                return data
-            }
-            if smallest == nil || data.count < smallest!.count {
-                smallest = data
-                smallestQuality = quality
-            }
+        let sdFrames = zip(images, durationsMs).map { image, ms in
+            SDImageFrame(image: image, duration: Double(ms) / 1000.0 + 1e-9)
         }
-
-        // Nothing fit at fast settings: one last, slow attempt on the smallest
-        // candidate only (never re-encode every rung at method 6).
-        guard let quality = smallestQuality else { return nil }
-        onAttempt?()
-        let data = encodeAnimated(
-            sdFrames,
-            loopCount: loopCount,
-            quality: quality,
-            method: escalatedMethod,
-            pass: escalatedPass
-        )
-        if let data, data.count <= animatedByteBudget {
-            return data
-        }
-        return nil
-    }
-
-    /// Runs one animated encode attempt in its own autorelease pool and logs its
-    /// duration under `#if DEBUG`. Bytes/duration only — never frame content.
-    private static func encodeAnimated(
-        _ frames: [SDImageFrame],
-        loopCount: UInt,
-        quality: Double,
-        method: Int,
-        pass: Int
-    ) -> Data? {
         let options: [SDImageCoderOption: Any] = [
             .encodeCompressionQuality: quality,
-            .encodeWebPMethod: method,
-            .encodeWebPPass: pass,
+            .encodeWebPMethod: fallbackMethod,
+            .encodeWebPPass: fallbackPass,
             .encodeWebPThreadLevel: 1,
             .encodeWebPAlphaQuality: 60
         ]
-        #if DEBUG
-        let started = CFAbsoluteTimeGetCurrent()
-        #endif
-        let data = autoreleasepool { () -> Data? in
+        return autoreleasepool { () -> Data? in
             SDImageWebPCoder.shared.encodedData(
-                with: frames,
-                loopCount: loopCount,
+                with: sdFrames,
+                loopCount: UInt(max(0, loopCount)),
                 format: .webP,
                 options: options
             )
         }
-        #if DEBUG
-        let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
-        print(String(
-            format: "[StickerEncoder] animated q=%.2f method=%d pass=%d %.0fms -> %d bytes",
-            quality, method, pass, ms, data?.count ?? 0
-        ))
-        #endif
-        return data
     }
 
     // MARK: - Frame preparation
@@ -249,33 +218,28 @@ enum StickerEncoder {
         return prepared
     }
 
-    /// Rewrites frame durations to whole milliseconds that sum to
-    /// `targetDuration`. libwebp stores each frame as `int(duration * 1000)`
-    /// (truncation), so integer milliseconds are the only way the total animation
-    /// length is exact. Frames are never shortened below the 8 ms floor.
-    private static func withTargetDurations(_ frames: [Frame], targetDuration: TimeInterval?) -> [Frame] {
-        guard let targetDuration, !frames.isEmpty else { return frames }
+    /// Frame durations as whole milliseconds. With a `targetDuration` the
+    /// millisecond values sum exactly to it (never below the 8 ms floor); without
+    /// one, each duration is truncated to milliseconds and clamped to the floor.
+    private static func targetMilliseconds(_ frames: [Frame], targetDuration: TimeInterval?) -> [Int] {
+        let floorMs = Int((Limits.minFrameDuration * 1000).rounded())
+        guard let targetDuration, !frames.isEmpty else {
+            return frames.map { max(floorMs, Int($0.duration * 1000 + 1e-6)) }
+        }
+
         let count = frames.count
-        let floorMs = count * Int((Limits.minFrameDuration * 1000).rounded())
+        let floorTotal = count * floorMs
         let requestedMs = Int((min(max(targetDuration, 0), Limits.maxAnimationDuration) * 1000).rounded())
-        let totalMs = max(requestedMs, floorMs)
-        guard totalMs > 0 else { return frames }
+        let totalMs = max(requestedMs, floorTotal)
+        guard totalMs > 0 else { return Array(repeating: floorMs, count: count) }
 
         let base = totalMs / count
         let remainder = totalMs % count
-        let distributed = frames.enumerated().map { index, frame in
-            let ms = base + (index < remainder ? 1 : 0)
-            // SDWebImageWebPCoder truncates `int(duration * 1000)`. `Double(ms)/1000`
-            // can land a hair below `ms` (e.g. 1001 ms → 1000.999…), so nudge by a
-            // sub-microsecond epsilon to make the truncation land on `ms`.
-            return Frame(image: frame.image, duration: Double(ms) / 1000.0 + 1e-9)
-        }
+        let result = (0..<count).map { base + ($0 < remainder ? 1 : 0) }
         #if DEBUG
-        let sumMs = distributed.reduce(0) { $0 + Int(($1.duration * 1000).rounded()) }
-        print("[StickerEncoder] animated target \(totalMs)ms over \(count) frames (sum \(sumMs)ms)")
-        assert(abs(sumMs - totalMs) <= 1, "Animated frame durations must sum to the target")
+        assert(result.reduce(0, +) == totalMs, "Animated frame durations must sum to the target")
         #endif
-        return distributed
+        return result
     }
 
     /// Progressively fewer frames: every 2nd, then 12, 9, 6 — never the full set
