@@ -30,6 +30,32 @@ struct AddStickerSheet: View {
 
     private var pack: StickerPack? { store.pack(with: packID) }
 
+    /// The pack's kind is fixed by its first sticker; `nil` while empty.
+    private var packKind: StickerKind? { pack?.stickers.first?.kind }
+
+    /// A source's kind: stills are static, GIFs and videos animated.
+    private func stickerKind(for source: StickerSource) -> StickerKind {
+        switch source {
+        case .image: .static
+        case .video, .gif: .animated
+        }
+    }
+
+    /// An empty pack takes any kind (the first sticker sets it); a non-empty pack
+    /// only takes its own kind, so a pack can never mix photos and videos.
+    private func isCompatible(_ kind: StickerKind) -> Bool {
+        guard let packKind else { return true }
+        return packKind == kind
+    }
+
+    private var incompatibleMessage: String {
+        switch packKind {
+        case .animated: "This pack holds videos. Add a video or GIF, or start a new pack."
+        case .static: "This pack holds photos. Add a photo, or start a new pack."
+        case nil: "That media doesn't fit this pack."
+        }
+    }
+
     private var remaining: Int {
         max(0, Limits.maxStickers - (pack?.stickers.count ?? 0))
     }
@@ -239,7 +265,7 @@ struct AddStickerSheet: View {
             .buttonStyle(.glass)
             .accessibilityLabel("Import from Files")
 
-            if isCameraAvailable {
+            if isCameraAvailable && isCompatible(.static) {
                 Button {
                     requestCamera()
                 } label: {
@@ -390,7 +416,7 @@ struct AddStickerSheet: View {
                         .accessibilityLabel("Add media from Files")
                     }
 
-                    if isCameraAvailable {
+                    if isCameraAvailable && isCompatible(.static) {
                         cameraIconButton
                     }
 
@@ -537,6 +563,10 @@ struct AddStickerSheet: View {
             guard queue.count < remaining else { break }
             do {
                 let source = try await StickerSourceStore.importFile(at: url)
+                guard isCompatible(stickerKind(for: source)) else {
+                    errorMessage = incompatibleMessage
+                    continue
+                }
                 queue.append(QueueItem(source: source))
             } catch {
                 errorMessage = error.localizedDescription
@@ -587,6 +617,10 @@ struct AddStickerSheet: View {
                 committingID = item.id
                 currentStage = .loading
                 let sticker = try await resolvedSticker(for: item)
+                guard isCompatible(sticker.kind) else {
+                    errorMessage = incompatibleMessage
+                    return
+                }
                 try store.add(sticker, to: packID)
                 queue.removeAll { $0.id == item.id }
             } catch {
@@ -685,6 +719,10 @@ struct AddStickerSheet: View {
             do {
                 let upright = image.upNormalized() ?? image
                 let source = try StickerSourceStore.saveImage(upright, id: UUID())
+                guard isCompatible(.static) else {
+                    errorMessage = incompatibleMessage
+                    return
+                }
                 queue.append(QueueItem(source: source))
             } catch {
                 errorMessage = error.localizedDescription

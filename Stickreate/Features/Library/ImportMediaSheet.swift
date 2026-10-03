@@ -44,6 +44,35 @@ struct ImportMediaSheet: View {
         selectedPackID.flatMap { store.pack(with: $0) }
     }
 
+    /// The kind this incoming media would become: stills are static, GIFs and
+    /// videos animated.
+    private var incomingKind: StickerKind {
+        switch source {
+        case .image: .static
+        case .video, .gif: .animated
+        }
+    }
+
+    /// An empty pack takes any kind; a non-empty pack only takes its own kind, so
+    /// a pack never mixes photos and videos.
+    private func isCompatible(_ pack: StickerPack) -> Bool {
+        pack.stickers.isEmpty || pack.kind == incomingKind
+    }
+
+    private func incompatibleReason(_ pack: StickerPack) -> String {
+        switch incomingKind {
+        case .static: "Holds videos"
+        case .animated: "Holds photos"
+        }
+    }
+
+    private var incompatibleMessage: String {
+        switch incomingKind {
+        case .static: "This pack holds videos. Pick a pack for photos, or create a new one."
+        case .animated: "This pack holds photos. Pick a pack for videos, or create a new one."
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -185,6 +214,7 @@ struct ImportMediaSheet: View {
 
     private func packRow(_ pack: StickerPack) -> some View {
         let isSelected = selectedPackID == pack.id
+        let compatible = isCompatible(pack)
 
         return Button {
             selectedPackID = pack.id
@@ -197,7 +227,7 @@ struct ImportMediaSheet: View {
                         .font(.headline)
                         .lineLimit(1)
 
-                    Text(packSummary(pack))
+                    Text(compatible ? packSummary(pack) : incompatibleReason(pack))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -208,13 +238,18 @@ struct ImportMediaSheet: View {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.title3)
                         .foregroundStyle(Color.accentColor)
+                } else if !compatible {
+                    Image(systemName: "nosign")
+                        .font(.title3)
+                        .foregroundStyle(.tertiary)
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(pack.name), \(packSummary(pack))")
-        .accessibilityHint("Selects this pack")
+        .disabled(!compatible)
+        .accessibilityLabel("\(pack.name), \(compatible ? packSummary(pack) : incompatibleReason(pack))")
+        .accessibilityHint(compatible ? "Selects this pack" : "This pack holds the other kind of media")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
@@ -247,7 +282,7 @@ struct ImportMediaSheet: View {
 
     private func selectFirstPack() {
         guard selectedPackID == nil else { return }
-        if let pack = store.packs.first {
+        if let pack = store.packs.first(where: isCompatible) {
             selectedPackID = pack.id
         }
     }
@@ -277,7 +312,10 @@ struct ImportMediaSheet: View {
 
     @MainActor
     private func performAdd() {
-        guard let packID = selectedPackID, !isBusy else { return }
+        guard let packID = selectedPackID,
+              let pack = store.pack(with: packID),
+              isCompatible(pack),
+              !isBusy else { return }
 
         switch source {
         case .image:
@@ -295,6 +333,11 @@ struct ImportMediaSheet: View {
         Task {
             do {
                 let sticker = try await StickerFactory.makeAnimatedSticker(fromGIFSource: source)
+                guard let pack = store.pack(with: packID), isCompatible(pack) else {
+                    isBusy = false
+                    errorMessage = incompatibleMessage
+                    return
+                }
                 try store.add(sticker, to: packID)
                 isBusy = false
                 onDone()
@@ -321,7 +364,9 @@ struct ImportMediaSheet: View {
 
     @MainActor
     private func addFromEditor(_ sticker: StickerItem) {
-        guard let packID = selectedPackID else { return }
+        guard let packID = selectedPackID,
+              let pack = store.pack(with: packID),
+              isCompatible(pack) else { return }
         do {
             try store.add(sticker, to: packID)
             didAdd = true

@@ -60,13 +60,9 @@ struct PackEditorView: View {
     private var pack: StickerPack? { store.pack(with: packID) }
 
     private var canExport: Bool {
-        guard let pack else { return false }
-        // A mixed pack splits into two exports, so it's exportable when either
-        // subset alone meets the minimum.
-        if pack.isMixed {
-            return pack.staticStickers.count >= Limits.minStickers
-                || pack.animatedStickers.count >= Limits.minStickers
-        }
+        // A mixed pack has no kind WhatsApp can import in one go, so it can't
+        // export until the user removes the extra kind.
+        guard let pack, !pack.isMixed else { return false }
         return pack.stickers.count >= Limits.minStickers
     }
 
@@ -79,9 +75,7 @@ struct PackEditorView: View {
                 AddStickerSheet(store: store, packID: packID)
             }
             .sheet(isPresented: $showingExport) {
-                if let pack {
-                    ExportSheet(pack: pack)
-                }
+                ExportSheet(store: store, packID: packID)
             }
             .sheet(item: $editTask) { task in
                 editSheet(for: task)
@@ -203,11 +197,6 @@ struct PackEditorView: View {
                 Spacer()
                 Text("\(pack.stickers.count) of \(Limits.maxStickers)")
             }
-
-            if pack.isMixed {
-                Text("\(pack.staticStickers.count) static · \(pack.animatedStickers.count) animated")
-                    .font(.caption)
-            }
         }
         .font(.subheadline)
         .foregroundStyle(.secondary)
@@ -217,13 +206,11 @@ struct PackEditorView: View {
     /// Kind from the actual stickers: a sticker's preview is always a still, so
     /// the cover alone can't tell you whether the pack is animated.
     private func kindLabel(for pack: StickerPack) -> String {
-        if pack.isMixed { return "Mixed" }
         guard !pack.stickers.isEmpty else { return "Empty" }
         return pack.animatedStickers.count > pack.staticStickers.count ? "Animated" : "Static"
     }
 
     private func kindSymbol(for pack: StickerPack) -> String {
-        if pack.isMixed { return "square.grid.2x2" }
         guard !pack.stickers.isEmpty else { return "photo" }
         return pack.animatedStickers.count > pack.staticStickers.count ? "play.rectangle" : "photo"
     }
@@ -281,7 +268,7 @@ struct PackEditorView: View {
 
     private func exportHint(for pack: StickerPack) -> String {
         if pack.isMixed {
-            return "Each kind needs at least \(Limits.minStickers) stickers to export."
+            return "This pack mixes photos and videos. Remove the extras to export."
         }
         let needed = max(0, Limits.minStickers - pack.stickers.count)
         return needed == 1

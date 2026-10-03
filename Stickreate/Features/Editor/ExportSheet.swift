@@ -1,16 +1,19 @@
 import SwiftUI
 import UIKit
 
-/// Confirms and exports a finished pack. WhatsApp mode hands it to WhatsApp (a
-/// mixed pack exports its static and animated subsets separately); file mode
-/// shares a `.stickreatepack`.
+/// Confirms and exports a finished pack. WhatsApp mode adds the pack's single
+/// kind; packs can't mix photos and videos, so a mixed pack is blocked with an
+/// explanation. File mode shares a `.stickreatepack`.
+///
+/// Reads the pack live from the store by id, so it never shows a stale snapshot.
 struct ExportSheet: View {
-    let pack: StickerPack
+    let store: PackStore
+    let packID: UUID
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var settings = SettingsStore.shared
-    @State private var exportedKinds: Set<StickerKind> = []
+    @State private var isExported = false
     @State private var errorMessage: String?
     @State private var shareItem: ShareItem?
     @State private var detent: PresentationDetent = .large
@@ -20,17 +23,23 @@ struct ExportSheet: View {
         let url: URL
     }
 
+    private var pack: StickerPack? { store.pack(with: packID) }
+
     @MainActor private var isWhatsAppInstalled: Bool { WhatsAppExporter.isWhatsAppInstalled }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    preview
-                    header
-                    actions
+            Group {
+                if let pack {
+                    ScrollView {
+                        VStack(spacing: 24) {
+                            preview(pack)
+                            header(pack)
+                            actions(pack)
+                        }
+                        .padding(24)
+                    }
                 }
-                .padding(24)
             }
             .navigationTitle(settings.exportMode == .file ? "Export Pack" : "Add to WhatsApp")
             .navigationBarTitleDisplayMode(.inline)
@@ -59,7 +68,7 @@ struct ExportSheet: View {
         }
     }
 
-    private var preview: some View {
+    private func preview(_ pack: StickerPack) -> some View {
         LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
             spacing: 8
@@ -88,23 +97,20 @@ struct ExportSheet: View {
             }
     }
 
-    private var header: some View {
+    private func header(_ pack: StickerPack) -> some View {
         VStack(spacing: 4) {
             Text(pack.name)
                 .font(.headline)
                 .lineLimit(1)
 
-            Text(statusLine)
+            Text(statusLine(pack))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
     }
 
-    private var statusLine: String {
-        if pack.isMixed {
-            return "\(pack.staticStickers.count) static · \(pack.animatedStickers.count) animated"
-        }
+    private func statusLine(_ pack: StickerPack) -> String {
         let count = pack.stickers.count
         let kind = pack.kind?.label.lowercased() ?? "sticker"
         return "\(count) \(kind) \(count == 1 ? "sticker" : "stickers") · ready to add"
@@ -114,21 +120,21 @@ struct ExportSheet: View {
 
     @MainActor
     @ViewBuilder
-    private var actions: some View {
+    private func actions(_ pack: StickerPack) -> some View {
         if settings.exportMode == .file {
-            fileActions
+            fileActions(pack)
         } else if pack.isMixed {
-            mixedActions
+            mixedNotice
         } else {
-            singleAction
+            singleAction(pack)
         }
     }
 
     @MainActor
-    private var fileActions: some View {
+    private func fileActions(_ pack: StickerPack) -> some View {
         VStack(spacing: 12) {
             Button {
-                shareFile()
+                shareFile(pack)
             } label: {
                 Label("Share Pack File", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity)
@@ -144,7 +150,7 @@ struct ExportSheet: View {
     }
 
     @MainActor
-    private func shareFile() {
+    private func shareFile(_ pack: StickerPack) {
         do {
             let url = try PackArchive.writeTemporaryFile(pack)
             shareItem = ShareItem(url: url)
@@ -154,13 +160,27 @@ struct ExportSheet: View {
     }
 
     @MainActor
-    private var singleAction: some View {
+    private var mixedNotice: some View {
         VStack(spacing: 12) {
-            if exportedKinds.contains(pack.kind ?? .static) {
+            Label("This pack mixes photos and videos", systemImage: "exclamationmark.triangle")
+                .font(.subheadline.weight(.semibold))
+
+            Text("WhatsApp imports one kind per pack. Remove the stickers that don't belong, or share it as a file instead.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @MainActor
+    private func singleAction(_ pack: StickerPack) -> some View {
+        VStack(spacing: 12) {
+            if isExported {
                 addedLabel("Added to WhatsApp")
             } else {
                 Button {
-                    export(stickers: pack.stickers, kind: pack.kind ?? .static)
+                    export(pack)
                 } label: {
                     Label("Add to WhatsApp", systemImage: "plus.message")
                         .frame(maxWidth: .infinity)
@@ -172,55 +192,6 @@ struct ExportSheet: View {
             }
 
             whatsAppFootnote
-        }
-    }
-
-    @MainActor
-    private var mixedActions: some View {
-        VStack(spacing: 12) {
-            Text("This pack has photos and videos. WhatsApp needs them as two separate packs.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
-            exportButton(kind: .static, stickers: pack.staticStickers)
-            exportButton(kind: .animated, stickers: pack.animatedStickers)
-            whatsAppFootnote
-        }
-    }
-
-    @MainActor
-    private func exportButton(kind: StickerKind, stickers: [StickerItem]) -> some View {
-        let count = stickers.count
-        let isShort = count < Limits.minStickers
-        let isExported = exportedKinds.contains(kind)
-
-        return VStack(spacing: 6) {
-            if isExported {
-                addedLabel("Added \(kind.label.lowercased()) pack")
-            } else {
-                Button {
-                    export(stickers: stickers, kind: kind)
-                } label: {
-                    Label("Add \(kind.label.lowercased()) pack (\(count))", systemImage: symbol(for: kind))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.glass)
-                .tint(.green)
-                .disabled(isShort)
-                .accessibilityHint(
-                    isShort
-                        ? "Needs at least \(Limits.minStickers) stickers"
-                        : "Adds this pack to WhatsApp"
-                )
-            }
-
-            if isShort {
-                Text("\(kind.label) needs at least \(Limits.minStickers) stickers.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -243,44 +214,34 @@ struct ExportSheet: View {
         }
     }
 
-    private func symbol(for kind: StickerKind) -> String {
-        kind == .animated ? "play.rectangle" : "photo"
-    }
-
     @MainActor
-    private func export(stickers: [StickerItem], kind: StickerKind) {
+    private func export(_ pack: StickerPack) {
         do {
             try WhatsAppExporter.export(
-                stickers: stickers,
-                kind: kind,
+                stickers: pack.stickers,
+                kind: pack.kind ?? .static,
                 name: pack.name,
                 publisher: pack.publisher,
-                identifier: identifier(for: kind)
+                identifier: pack.id.uuidString
             )
-            withAnimation { _ = exportedKinds.insert(kind) }
+            withAnimation { isExported = true }
 
-            // Single-kind packs are done; mixed packs stay open so the other
-            // subset can be added too.
-            if !pack.isMixed {
-                Task {
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    dismiss()
-                }
+            Task {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                dismiss()
             }
         } catch {
             errorMessage = error.localizedDescription
         }
     }
-
-    /// Distinct identifier per subset so WhatsApp doesn't merge them.
-    private func identifier(for kind: StickerKind) -> String {
-        pack.isMixed ? "\(pack.id.uuidString)-\(kind.rawValue)" : pack.id.uuidString
-    }
 }
 
 #Preview {
+    let store = PackStore()
     let stickers = (0..<6).map { _ in
         StickerItem(kind: .static, stickerData: Data(), previewData: Data())
     }
-    return ExportSheet(pack: StickerPack(name: "Cats", stickers: stickers))
+    let pack = StickerPack(name: "Cats", stickers: stickers)
+    store.importPack(pack)
+    return ExportSheet(store: store, packID: pack.id)
 }

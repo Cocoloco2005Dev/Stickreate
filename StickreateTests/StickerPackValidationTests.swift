@@ -25,23 +25,14 @@ final class StickerPackValidationTests: XCTestCase {
         }
     }
 
-    func testMixedPackWithUndersizedGroupThrowsTooFew() {
-        let pack = StickerPack(
-            name: "P",
-            stickers: stickers(.static, count: 3) + stickers(.animated, count: 2)
-        )
-        XCTAssertThrowsError(try pack.validate()) { error in
-            XCTAssertEqual(error as? StickerPack.ValidationError, .tooFew(Limits.minStickers))
-        }
-    }
-
-    func testMixedPackWithEnoughOfEachKindPasses() {
+    func testMixedPackThrowsMixedKinds() {
         let pack = StickerPack(
             name: "P",
             stickers: stickers(.static, count: 3) + stickers(.animated, count: 3)
         )
-        XCTAssertNoThrow(try pack.validate())
-        XCTAssertTrue(pack.isMixed)
+        XCTAssertThrowsError(try pack.validate()) { error in
+            XCTAssertEqual(error as? StickerPack.ValidationError, .mixedKinds)
+        }
     }
 
     func testSingleKindBelowMinimumThrowsTooFew() {

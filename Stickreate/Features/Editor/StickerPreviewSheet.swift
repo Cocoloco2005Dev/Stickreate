@@ -209,14 +209,16 @@ private struct AnimatedStickerView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> SDAnimatedImageView {
-        let view = SDAnimatedImageView(frame: .zero)
+        let view = AutoplayAnimatedImageView(frame: .zero)
         view.contentMode = .scaleAspectFit
         view.clipsToBounds = true
         view.isUserInteractionEnabled = false
+        view.autoPlayAnimatedImage = true
         // Only build the image when the bytes actually change, so re-rendering
         // the sheet never restarts the animation.
         context.coordinator.data = data
         view.image = SDAnimatedImage(data: data) ?? fallback
+        view.startAnimating()
         return view
     }
 
@@ -224,9 +226,22 @@ private struct AnimatedStickerView: UIViewRepresentable {
         guard context.coordinator.data != data else { return }
         context.coordinator.data = data
         uiView.image = SDAnimatedImage(data: data) ?? fallback
+        uiView.startAnimating()
     }
 
     final class Coordinator {
         var data: Data?
+    }
+}
+
+/// `SDAnimatedImageView` only starts its display link once it lands in a window;
+/// when the image is set from a `UIViewRepresentable` before attachment it can
+/// stay frozen. Nudge it to animate as soon as it is on screen.
+private final class AutoplayAnimatedImageView: SDAnimatedImageView {
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        autoPlayAnimatedImage = true
+        startAnimating()
     }
 }

@@ -99,7 +99,7 @@ struct LibraryView: View {
                 }
             }
             .sheet(item: $exportTarget) { pack in
-                ExportSheet(pack: pack)
+                ExportSheet(store: store, packID: pack.id)
             }
             .sheet(item: $shareItem) { item in
                 ActivityView(url: item.url) { shareItem = nil }
@@ -182,6 +182,8 @@ struct LibraryView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // Two clear actions: filter the grid, and add. The imports live under
+        // Add so the bar never shows three near-identical icons.
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Picker("Folder", selection: $folderFilter) {
@@ -198,30 +200,24 @@ struct LibraryView: View {
         }
 
         ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                showingMediaImporter = true
-            } label: {
-                Label("Import from Files", systemImage: "folder.badge.plus")
-            }
-            .accessibilityLabel("Import photos or videos from Files")
-        }
+            Menu {
+                Button("New Pack", systemImage: "plus") {
+                    createPack()
+                }
 
-        ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                showingImporter = true
-            } label: {
-                Label("Import Pack", systemImage: "square.and.arrow.down")
-            }
-            .accessibilityLabel("Import sticker pack")
-        }
+                Divider()
 
-        ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                createPack()
+                Button("Import from Files", systemImage: "folder.badge.plus") {
+                    showingMediaImporter = true
+                }
+
+                Button("Import Pack", systemImage: "square.and.arrow.down") {
+                    showingImporter = true
+                }
             } label: {
-                Label("New Pack", systemImage: "plus")
+                Label("Add", systemImage: "plus")
             }
-            .accessibilityLabel("New sticker pack")
+            .accessibilityLabel("Add packs or media")
         }
     }
 
@@ -354,11 +350,8 @@ struct LibraryView: View {
     }
 
     private func canExport(_ pack: StickerPack) -> Bool {
-        if pack.isMixed {
-            return pack.staticStickers.count >= Limits.minStickers
-                || pack.animatedStickers.count >= Limits.minStickers
-        }
-        return pack.stickers.count >= Limits.minStickers
+        // Mixed packs have no single kind WhatsApp can import.
+        !pack.isMixed && pack.stickers.count >= Limits.minStickers
     }
 
     private var exportMenuTitle: String {

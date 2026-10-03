@@ -1,6 +1,15 @@
 import SwiftUI
 import UIKit
 import AVFoundation
+import Observation
+
+/// Live playback flag for the preview. A reference type so the running
+/// `AVPlayer` observers read the current value instead of a stale snapshot of
+/// the view — the bug that stopped looping.
+@Observable
+private final class PlaybackModel {
+    var isPlaying = false
+}
 
 /// Edits a video source: duration trim, spatial crop, then an explicit
 /// Original / Intelligent Cut choice. The screens are dark editors with a
@@ -34,7 +43,7 @@ struct VideoTrimView: View {
     @State private var videoAspect: CGFloat?
 
     @State private var player: AVPlayer?
-    @State private var isPlaying = false
+    @State private var playback = PlaybackModel()
     @State private var timeObserver: Any?
     /// Fires when playback crosses `upperBound`, so it can loop back to `lowerBound`.
     @State private var loopObserver: Any?
@@ -219,7 +228,7 @@ struct VideoTrimView: View {
         Button {
             togglePlayback()
         } label: {
-            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+            Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
                 .font(.system(size: 26, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: 68, height: 68)
@@ -227,7 +236,7 @@ struct VideoTrimView: View {
                 .overlay(Circle().stroke(.white.opacity(0.5), lineWidth: 1.5))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isPlaying ? "Pause" : "Play")
+        .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
         .accessibilityHint("Plays the video preview")
     }
 
@@ -254,14 +263,14 @@ struct VideoTrimView: View {
         Button {
             togglePlayback()
         } label: {
-            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+            Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(.white)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(isPlaying ? "Pause" : "Play")
+        .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
     }
 
     // MARK: - Bottom panel
@@ -469,7 +478,7 @@ struct VideoTrimView: View {
             ) { time in
                 let seconds = CMTimeGetSeconds(time)
                 guard seconds.isFinite else { return }
-                guard isPlaying else {
+                guard playback.isPlaying else {
                     playhead = min(max(seconds, lowerBound), upperBound)
                     return
                 }
@@ -494,7 +503,7 @@ struct VideoTrimView: View {
                 object: player.currentItem,
                 queue: .main
             ) { _ in
-                guard isPlaying else { return }
+                guard playback.isPlaying else { return }
                 player.seek(
                     to: CMTime(seconds: lowerBound, preferredTimescale: 600),
                     toleranceBefore: .zero,
@@ -553,7 +562,7 @@ struct VideoTrimView: View {
         }
         let boundary = NSValue(time: CMTime(seconds: upperBound, preferredTimescale: 600))
         loopObserver = player.addBoundaryTimeObserver(forTimes: [boundary], queue: .main) {
-            guard isPlaying else { return }
+            guard playback.isPlaying else { return }
             player.seek(
                 to: CMTime(seconds: lowerBound, preferredTimescale: 600),
                 toleranceBefore: .zero,
@@ -573,7 +582,7 @@ struct VideoTrimView: View {
             toleranceAfter: .zero
         )
         playhead = lowerBound
-        if isPlaying {
+        if playback.isPlaying {
             player.play()
         }
     }
@@ -584,7 +593,7 @@ struct VideoTrimView: View {
         installLoopObserver()
         playhead = min(max(playhead, lowerBound), upperBound)
 
-        guard isPlaying, let player else { return }
+        guard playback.isPlaying, let player else { return }
         let current = CMTimeGetSeconds(player.currentTime())
         guard current.isFinite else { return }
         if current < lowerBound || current > upperBound {
@@ -632,9 +641,9 @@ struct VideoTrimView: View {
 
     private func scrub(to time: TimeInterval) {
         guard let player else { return }
-        if isPlaying {
+        if playback.isPlaying {
             player.pause()
-            isPlaying = false
+            playback.isPlaying = false
         }
         player.seek(
             to: CMTime(seconds: time, preferredTimescale: 600),
@@ -646,9 +655,9 @@ struct VideoTrimView: View {
 
     private func togglePlayback() {
         guard let player else { return }
-        if isPlaying {
+        if playback.isPlaying {
             player.pause()
-            isPlaying = false
+            playback.isPlaying = false
         } else {
             if playhead >= upperBound - 0.05 || playhead < lowerBound - 0.05 {
                 player.seek(
@@ -657,8 +666,8 @@ struct VideoTrimView: View {
                     toleranceAfter: .zero
                 )
             }
-            player.play()
-            isPlaying = true
+            player.playImmediately(atRate: 1.0)
+            playback.isPlaying = true
         }
     }
 
@@ -707,7 +716,7 @@ struct VideoTrimView: View {
         isCreating = true
         stage = .loading
         player?.pause()
-        isPlaying = false
+        playback.isPlaying = false
 
         Task {
             do {

@@ -45,6 +45,65 @@ enum WebPAnimationEncoder {
         }
     }
 
+    /// sRGB, 8-bit, premultiplied RGBA. `vImageBuffer_InitWithCGImage` converts
+    /// every frame into this format before it is unpremultiplied for libwebp.
+    private static let rgbaFormat: vImage_CGImageFormat? = {
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        return vImage_CGImageFormat(
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            colorSpace: colorSpace,
+            bitmapInfo: CGBitmapInfo(
+                rawValue: CGImageAlphaInfo.premultipliedLast.rawValue
+                    | CGBitmapInfo.byteOrder32Big.rawValue
+            ),
+            renderingIntent: .defaultIntent
+        )
+    }()
+
+    #if DEBUG
+    /// Runs the row-order self-check once per process.
+    private static let didCheckRGBAOrientation: Bool = {
+        assertRGBAIsTopLeft()
+        return true
+    }()
+
+    /// Sanity check that the RGBA fill path produces a TOP-LEFT row-major buffer:
+    /// a UIKit-rendered red-top / blue-bottom pattern must have red in the first
+    /// row of the buffer (row 0), which is what `WebPPictureImportRGBA` expects.
+    /// If this ever fails, the export would be vertically flipped.
+    private static func assertRGBAIsTopLeft() {
+        let side = 4
+        let rendererFormat = UIGraphicsImageRendererFormat()
+        rendererFormat.scale = 1
+        rendererFormat.opaque = true
+        // UIKit renderers use a top-left origin: y = 0 is the TOP row.
+        let pattern = UIGraphicsImageRenderer(
+            size: CGSize(width: side, height: side),
+            format: rendererFormat
+        ).image { context in
+            context.cgContext.setFillColor(UIColor.red.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: 0, width: side, height: side / 2))
+            context.cgContext.setFillColor(UIColor.blue.cgColor)
+            context.cgContext.fill(CGRect(x: 0, y: side / 2, width: side, height: side / 2))
+        }
+        guard let cgImage = pattern.cgImage, var format = rgbaFormat else { return }
+
+        var buffer = vImage_Buffer()
+        defer { buffer.free() }
+        guard vImageBuffer_InitWithCGImage(
+            &buffer, &format, nil, cgImage, vImage_Flags(kvImageNoFlags)
+        ) == kvImageNoError,
+        let data = buffer.data?.assumingMemoryBound(to: UInt8.self) else { return }
+
+        // Premultiplied RGBA with alpha 255, so the components are the raw colors.
+        assert(
+            data[0] > 180 && data[1] < 80 && data[2] < 80,
+            "WebPAnimationEncoder RGBA buffer row 0 must be the image TOP row (expected red)"
+        )
+    }
+    #endif
+
     /// Encodes RGBA frames (all the same pixel size) into an animated WebP.
     /// `durationsMs[i]` is frame i's duration in integer milliseconds.
     /// `onProgress` is called after each frame with a `0...1` fraction.
@@ -81,6 +140,8 @@ enum WebPAnimationEncoder {
             frames.allSatisfy { $0.imageOrientation == .up },
             "WebPAnimationEncoder expects upright frames; extraction must apply the track transform"
         )
+        // Also verify the RGBA fill path itself keeps row 0 = image top.
+        _ = didCheckRGBAOrientation
         #endif
 
         var encOptions = WebPAnimEncoderOptions()
@@ -110,28 +171,9 @@ enum WebPAnimationEncoder {
         config.alpha_quality = Int32(config.quality)
         guard WebPValidateConfig(&config) != 0 else { return nil }
 
-        // One RGBA buffer + context reused for every frame; libwebp copies on import.
-        let bytesPerRow = width * 4
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bytesPerRow * height)
-        defer { buffer.deallocate() }
-        buffer.initialize(repeating: 0, count: bytesPerRow * height)
-
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: buffer,
-                  width: width,
-                  height: height,
-                  bitsPerComponent: 8,
-                  bytesPerRow: bytesPerRow,
-                  space: colorSpace,
-                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                      | CGBitmapInfo.byteOrder32Big.rawValue
-              ) else { return nil }
-        context.interpolationQuality = .high
-        // CGBitmapContext is bottom-left; flip so the buffer is top-down RGBA.
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: 1, y: -1)
-        let drawRect = CGRect(x: 0, y: 0, width: width, height: height)
+        // sRGB, 8-bit, premultiplied RGBA — the format `vImageBuffer_InitWithCGImage`
+        // converts each frame into before unpremultiplying for libwebp.
+        guard var format = rgbaFormat else { return nil }
 
         var timestamp = 0
         let total = frames.count
@@ -140,28 +182,34 @@ enum WebPAnimationEncoder {
             autoreleasepool {
                 let image = frames[index]
                 guard let cgImage = image.cgImage ?? image.upNormalized()?.cgImage else { return }
-                context.clear(drawRect)
-                context.draw(cgImage, in: drawRect)
 
-                // CGBitmapContext only produces premultiplied alpha; libwebp
-                // (like SDWebImageWebPCoder) wants straight alpha, otherwise
-                // semi-transparent edges come out dark.
-                var pixels = vImage_Buffer(
-                    data: UnsafeMutableRawPointer(buffer),
-                    height: vImagePixelCount(height),
-                    width: vImagePixelCount(width),
-                    rowBytes: bytesPerRow
-                )
-                guard vImageUnpremultiplyData_RGBA8888(&pixels, &pixels, vImage_Flags(kvImageNoFlags)) == kvImageNoError else {
-                    return
-                }
+                // vImage fills a buffer whose `data` is defined as the TOP-LEFT
+                // pixel, so the result is top-left row-major — exactly what
+                // `WebPPictureImportRGBA` expects. (Drawing through a raw
+                // CGContext required a CTM flip whose direction was easy to get
+                // wrong; that is what previously produced upside-down exports.)
+                var buffer = vImage_Buffer()
+                defer { buffer.free() }
+                guard vImageBuffer_InitWithCGImage(
+                    &buffer, &format, nil, cgImage, vImage_Flags(kvImageNoFlags)
+                ) == kvImageNoError else { return }
+
+                // vImageBuffer_InitWithCGImage yields premultiplied alpha;
+                // libwebp (like SDWebImageWebPCoder) wants straight alpha,
+                // otherwise semi-transparent edges come out dark.
+                guard vImageUnpremultiplyData_RGBA8888(
+                    &buffer, &buffer, vImage_Flags(kvImageNoFlags)
+                ) == kvImageNoError else { return }
 
                 var picture = WebPPicture()
                 guard WebPPictureInit(&picture) != 0 else { return }
                 defer { WebPPictureFree(&picture) }
                 picture.width = Int32(width)
                 picture.height = Int32(height)
-                guard WebPPictureImportRGBA(&picture, buffer, Int32(bytesPerRow)) != 0 else { return }
+                guard let pixels = buffer.data?.assumingMemoryBound(to: UInt8.self),
+                      WebPPictureImportRGBA(&picture, pixels, Int32(buffer.rowBytes)) != 0 else {
+                    return
+                }
                 guard WebPAnimEncoderAdd(encoder, &picture, Int32(timestamp), &config) != 0 else {
                     return
                 }
