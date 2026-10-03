@@ -7,9 +7,11 @@ import UIKit
 /// a contextual row, a 2×N tool grid, and the Cancel · undo/redo · Apply bar.
 /// Everything is non-destructive through `MaskEditor`. Background removal is
 /// `Intelligent Cut`: it opens the VisionKit subject-lift step
-/// (`SubjectLiftView`), where press-and-hold behaves exactly like Photos, and
-/// seeds the editable mask from the lifted cut-out so the manual tools refine
-/// it. Nothing is removed until the user asks for it.
+/// (`SubjectLiftView`), where press-and-hold behaves exactly like Photos and
+/// the lifted cut-out is dragged into a target to use it. The cut-out becomes
+/// the working image directly (transparent background, mask keeps everything),
+/// so the manual tools refine the real subject instead of a mapped mask.
+/// Nothing is removed until the user asks for it.
 @MainActor
 struct StickerEditorView: View {
     let source: StickerSource
@@ -418,7 +420,7 @@ struct StickerEditorView: View {
     // MARK: - VisionKit subject lift
 
     /// Full-screen VisionKit step. Press-and-hold lifts a subject exactly like
-    /// Photos; on confirm we seed a fresh editable mask from the cut-out.
+    /// Photos; the user drags the cut-out into a target, then we adopt it.
     @ViewBuilder
     private var subjectLiftCover: some View {
         if let editor {
@@ -428,21 +430,24 @@ struct StickerEditorView: View {
         }
     }
 
-    /// Seeds the editable mask from the lifted cut-out's alpha so Restore,
-    /// Erase, Rectangle, Lasso and Crop still refine the result.
+    /// Adopts the VisionKit cut-out as the working image directly. The
+    /// background is already removed, so the mask starts as "keep everything"
+    /// and there is no alpha-to-mask bridge to misalign. Restore, Erase,
+    /// Rectangle, Lasso, Crop and Original now operate on the clean cut-out.
     private func applyLiftedSubject(_ cutout: UIImage) {
         guard let editor else { return }
-        guard let mask = SubjectCutoutMask.mask(fromAlphaOf: cutout) else {
+        guard cutout.size.width > 0, cutout.size.height > 0 else {
             alertMessage = "Couldn't read the lifted subject."
             return
         }
         let radius = editor.brushRadius
-        let updated = MaskEditor(base: editor.base, mask: mask, maxDimension: 1024)
+        let updated = MaskEditor(base: cutout, mask: nil, maxDimension: 1024)
         updated.brushRadius = radius
         self.editor = updated
         activeTool = .aiCut
         hasLiftedSubject = true
         hasCommittedChange = true
+        applyInitialZoom(canvas: canvasSize, imageSize: updated.base.size, force: true)
         haptic()
         flash("Subject lifted · refine with the manual tools.", duration: 2.0)
     }

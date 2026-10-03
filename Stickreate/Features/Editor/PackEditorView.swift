@@ -368,13 +368,8 @@ struct PackEditorView: View {
                     showingFolder = true
                 }
 
-                // Primary: WhatsApp sticker import (opens WhatsApp's pack
-                // preview). Secondary: a `.stickreatepack` data file for backup.
-                Button("Add to WhatsApp…", systemImage: "plus.message") {
-                    showingExport = true
-                }
-                .disabled(!canExport)
-
+                // The green button above the grid is the WhatsApp import, so
+                // this menu only carries the `.stickreatepack` backup file.
                 Button("Export Pack File…", systemImage: "square.and.arrow.up") {
                     exportFile()
                 }

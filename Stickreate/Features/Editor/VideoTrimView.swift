@@ -50,6 +50,10 @@ struct VideoTrimView: View {
     @State private var loopObserver: Any?
     /// Fires when the item reaches its own end (selection runs to the last frame).
     @State private var endObserver: NSObjectProtocol?
+    /// Watches the item's load state so playback starts as soon as it's ready,
+    /// and a decode failure surfaces as an error instead of a dead preview.
+    @State private var itemObserver: NSKeyValueObservation?
+    @State private var didAutoplay = false
     @State private var playheadImage: UIImage?
     @State private var thumbTask: Task<Void, Never>?
 
@@ -441,6 +445,7 @@ struct VideoTrimView: View {
 
             let player = AVPlayer(url: sourceURL)
             player.actionAtItemEnd = .pause
+            player.isMuted = true
             self.player = player
 
             // Keeps the marker in sync and reflects playback started by either
@@ -486,6 +491,17 @@ struct VideoTrimView: View {
                 toleranceBefore: .zero,
                 toleranceAfter: .zero
             )
+
+            // Start playback as soon as the item is ready; report a decode
+            // failure instead of leaving a black, unplayable preview.
+            itemObserver = player.currentItem?.observe(\.status, options: [.initial, .new]) { item, _ in
+                let status = item.status
+                let message = item.error?.localizedDescription
+                Task { @MainActor in
+                    handleItemStatus(status, error: message)
+                }
+            }
+
             loadFilmstrip(for: loaded)
         } catch {
             isLoading = false
@@ -498,6 +514,29 @@ struct VideoTrimView: View {
         loadErrorMessage = nil
         isLoading = true
         Task { await load() }
+    }
+
+    /// Reacts to the player item becoming ready (autoplay) or failing.
+    @MainActor
+    private func handleItemStatus(_ status: AVPlayerItem.Status, error: String?) {
+        switch status {
+        case .readyToPlay:
+            guard !didAutoplay else { return }
+            didAutoplay = true
+            autoplay()
+        case .failed:
+            errorMessage = error ?? "This video couldn't be played."
+        default:
+            break
+        }
+    }
+
+    /// Starts the selection playing on its own so the preview shows motion.
+    private func autoplay() {
+        guard let player else { return }
+        player.isMuted = true
+        player.playImmediately(atRate: 1.0)
+        playback.isPlaying = true
     }
 
     private func teardownPlayer() {
@@ -514,6 +553,8 @@ struct VideoTrimView: View {
             NotificationCenter.default.removeObserver(endObserver)
         }
         endObserver = nil
+        itemObserver?.invalidate()
+        itemObserver = nil
         thumbTask?.cancel()
         thumbTask = nil
     }

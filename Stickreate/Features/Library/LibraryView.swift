@@ -12,7 +12,6 @@ struct LibraryView: View {
     @State private var searchText = ""
     @State private var folderFilter: FolderFilter = .all
     @State private var showingImporter = false
-    @State private var showingMediaImporter = false
     @State private var importedMedia: ImportedMedia?
     @State private var isImportingMedia = false
 
@@ -76,17 +75,10 @@ struct LibraryView: View {
             .toolbar { toolbarContent }
             .fileImporter(
                 isPresented: $showingImporter,
-                allowedContentTypes: [.json, .data],
+                allowedContentTypes: [.image, .movie, .gif, .data],
                 allowsMultipleSelection: false
             ) { result in
                 handleImport(result)
-            }
-            .fileImporter(
-                isPresented: $showingMediaImporter,
-                allowedContentTypes: [.image, .movie, .gif],
-                allowsMultipleSelection: false
-            ) { result in
-                handleMediaImport(result)
             }
             .sheet(item: $importedMedia) { media in
                 ImportMediaSheet(source: media.source, store: store) {
@@ -207,11 +199,9 @@ struct LibraryView: View {
 
                 Divider()
 
-                Button("Import from Files", systemImage: "folder.badge.plus") {
-                    showingMediaImporter = true
-                }
-
-                Button("Import Pack", systemImage: "square.and.arrow.down") {
+                // One entry: accepts photos, videos, GIFs, and `.stickreatepack`
+                // files, and routes to the right import below.
+                Button("Import…", systemImage: "square.and.arrow.down") {
                     showingImporter = true
                 }
             } label: {
@@ -234,11 +224,7 @@ struct LibraryView: View {
             }
             .buttonStyle(.glassProminent)
 
-            Button("Import from Files", systemImage: "folder.badge.plus") {
-                showingMediaImporter = true
-            }
-
-            Button("Import a Pack", systemImage: "square.and.arrow.down") {
+            Button("Import…", systemImage: "square.and.arrow.down") {
                 showingImporter = true
             }
         }
@@ -448,22 +434,32 @@ struct LibraryView: View {
         path.append(pack.id)
     }
 
+    /// Single import entry: a `.stickreatepack` file restores a pack; any other
+    /// pick (photo, video, GIF) is imported as media and offered a destination
+    /// pack through `ImportMediaSheet`.
     private func handleImport(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-            do {
-                let data = try Data(contentsOf: url)
-                let pack = try PackArchive.importPack(from: data)
-                store.importPack(pack)
-            } catch {
-                activeAlert = .importFailed(error.localizedDescription)
+            if url.pathExtension.lowercased() == "stickreatepack" {
+                importPackFile(url)
+            } else {
+                Task { await importMediaFile(url) }
             }
-
         case .failure(let error):
+            activeAlert = .importFailed(error.localizedDescription)
+        }
+    }
+
+    private func importPackFile(_ url: URL) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let pack = try PackArchive.importPack(from: data)
+            store.importPack(pack)
+        } catch {
             activeAlert = .importFailed(error.localizedDescription)
         }
     }
@@ -471,16 +467,6 @@ struct LibraryView: View {
     /// Files import path: reliable when the OS share/open-in doesn't route into the
     /// app (e.g. LiveContainer). Imports the file, then offers the destination
     /// picker via `ImportMediaSheet`.
-    private func handleMediaImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            Task { await importMediaFile(url) }
-        case .failure(let error):
-            activeAlert = .importFailed(error.localizedDescription)
-        }
-    }
-
     @MainActor
     private func importMediaFile(_ url: URL) async {
         isImportingMedia = true

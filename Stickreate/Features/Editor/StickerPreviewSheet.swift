@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import SDWebImage
+import SDWebImageWebPCoder
 
 /// Large, near-full-screen preview of one sticker. Animated stickers play their
 /// WebP; static stickers show their PNG preview. The action callbacks are
@@ -16,6 +17,8 @@ struct StickerPreviewSheet: View {
     var onDelete: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+
+    @State private var isPlaying = true
 
     private var staticImage: UIImage? {
         UIImage(data: item.previewData)
@@ -68,7 +71,11 @@ struct StickerPreviewSheet: View {
                 CheckerboardBackground()
 
                 if item.kind == .animated {
-                    AnimatedStickerView(data: item.stickerData, fallback: staticImage)
+                    AnimatedStickerView(
+                        data: item.stickerData,
+                        fallback: staticImage,
+                        isPlaying: $isPlaying
+                    )
                 } else if let staticImage {
                     Image(uiImage: staticImage)
                         .resizable()
@@ -81,21 +88,30 @@ struct StickerPreviewSheet: View {
             }
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(alignment: .topTrailing) {
+            .overlay(alignment: .bottomTrailing) {
                 if item.kind == .animated {
-                    Image(systemName: "play.fill")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(6)
-                        .background(.black.opacity(0.45), in: Circle())
+                    playPauseButton
                         .padding(12)
-                        .accessibilityHidden(true)
                 }
             }
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(item.kind == .animated ? "Animated sticker preview" : "Sticker preview")
         }
+    }
+
+    /// Icon-only play/pause for the animated preview. Control layer → glass.
+    private var playPauseButton: some View {
+        Button {
+            isPlaying.toggle()
+        } label: {
+            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                .font(.caption.weight(.bold))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.glass)
+        .accessibilityLabel(isPlaying ? "Pause" : "Play")
     }
 
     private var details: some View {
@@ -222,35 +238,45 @@ private struct CheckerboardBackground: View {
     }
 }
 
-/// Plays an animated WebP. Falls back to a still if the animation can't be
-/// decoded. Content layer — never glass.
+/// Plays an animated WebP with SDWebImage's animated image view. The image is
+/// decoded explicitly through `SDImageWebPCoder` (libwebp), which composites
+/// delta/dispose frames correctly — the ImageIO WebP coder (`SDImageAWebPCoder`)
+/// and `SDAnimatedImage(data:)` can silently yield a still, leaving a frozen
+/// preview. Falls back to a still only if decoding truly fails.
 private struct AnimatedStickerView: UIViewRepresentable {
     let data: Data
     let fallback: UIImage?
+    @Binding var isPlaying: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
     func makeUIView(context: Context) -> SDAnimatedImageView {
-        let view = AutoplayAnimatedImageView(frame: .zero)
+        let view = PlaybackAnimatedImageView(frame: .zero)
         view.contentMode = .scaleAspectFit
         view.clipsToBounds = true
         view.isUserInteractionEnabled = false
-        view.autoPlayAnimatedImage = true
-        // Only build the image when the bytes actually change, so re-rendering
-        // the sheet never restarts the animation.
+        view.autoPlayAnimatedImage = false   // playback is driven by `isPlaying`
+        view.resetFrameIndexWhenStopped = true
         context.coordinator.data = data
-        view.image = SDAnimatedImage(data: data) ?? fallback
+        view.image = SDImageWebPCoder.shared.decodedImage(with: data, options: nil) ?? fallback
+        view.wantsPlayback = isPlaying
         view.startAnimating()
         return view
     }
 
     func updateUIView(_ uiView: SDAnimatedImageView, context: Context) {
-        guard context.coordinator.data != data else { return }
-        context.coordinator.data = data
-        uiView.image = SDAnimatedImage(data: data) ?? fallback
-        uiView.startAnimating()
+        if context.coordinator.data != data {
+            context.coordinator.data = data
+            uiView.image = SDImageWebPCoder.shared.decodedImage(with: data, options: nil) ?? fallback
+        }
+        (uiView as? PlaybackAnimatedImageView)?.wantsPlayback = isPlaying
+        if isPlaying {
+            uiView.startAnimating()
+        } else {
+            uiView.stopAnimating()
+        }
     }
 
     final class Coordinator {
@@ -258,14 +284,16 @@ private struct AnimatedStickerView: UIViewRepresentable {
     }
 }
 
-/// `SDAnimatedImageView` only starts its display link once it lands in a window;
-/// when the image is set from a `UIViewRepresentable` before attachment it can
-/// stay frozen. Nudge it to animate as soon as it is on screen.
-private final class AutoplayAnimatedImageView: SDAnimatedImageView {
+/// Starts its display link only when it lands in a window and playback is
+/// wanted, so the animation reliably begins on screen and honors pause.
+private final class PlaybackAnimatedImageView: SDAnimatedImageView {
+    var wantsPlayback = true
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         guard window != nil else { return }
-        autoPlayAnimatedImage = true
-        startAnimating()
+        if wantsPlayback {
+            startAnimating()
+        }
     }
 }

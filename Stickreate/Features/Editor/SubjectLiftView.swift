@@ -7,18 +7,26 @@ import VisionKit
 /// exactly like Photos.
 ///
 /// A `UIImageView` hosts an `ImageAnalysisInteraction`; VisionKit draws its own
-/// highlight and lift while the finger is down. "Use Subject" hands the
-/// background-removed cutout back to the editor, which seeds its editable mask
-/// from the cutout's alpha so Restore/Erase/Rectangle/Lasso/Crop still refine it.
+/// highlight and lift while the finger is down. As soon as a subject is lifted,
+/// its background-removed cut-out appears as a draggable thumbnail. The user
+/// drags it into a target box (or taps "Use Subject") to hand it to the editor,
+/// which adopts the cut-out as its working image directly — no alpha-to-mask
+/// conversion, so there is nothing to misalign.
 @MainActor
 struct SubjectLiftView: View {
-    /// The working image to analyze. Same pixels the editor edits.
+    /// The working image to analyze.
     let image: UIImage
     /// Called with the background-removed cut-out when the user confirms.
     let onLift: (UIImage) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var model = SubjectLiftModel()
+
+    // Drag-to-use state, all in the global coordinate space.
+    @State private var dragTranslation: CGSize = .zero
+    @State private var isDragging = false
+    @State private var isOverTarget = false
+    @State private var targetFrame: CGRect = .zero
 
     var body: some View {
         NavigationStack {
@@ -56,23 +64,16 @@ struct SubjectLiftView: View {
         )
     }
 
-    // MARK: - Chrome
+    // MARK: - Bottom control
 
+    @ViewBuilder
     private var bottomBar: some View {
-        VStack(spacing: 10) {
-            Text("Press and hold a subject to lift it")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            Button {
-                liftSelected()
-            } label: {
-                Text("Use Subject")
-                    .frame(maxWidth: .infinity, minHeight: 44)
+        Group {
+            if let lifted = model.liftedImage {
+                useRow(lifted)
+            } else {
+                liftRow
             }
-            .buttonStyle(.glassProminent)
-            .disabled(model.subjectCount == 0 || model.isLifting)
-            .accessibilityHint("Lifts the highlighted subject into the editor")
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
@@ -80,6 +81,133 @@ struct SubjectLiftView: View {
         .background(.regularMaterial, ignoresSafeAreaEdges: .bottom)
         .overlay(alignment: .top) { Divider() }
     }
+
+    /// Before a subject is lifted: explain and offer a manual lift.
+    private var liftRow: some View {
+        VStack(spacing: 10) {
+            Text("Press and hold a subject to lift it")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Button {
+                Task { await model.liftFromInteraction() }
+            } label: {
+                Text("Lift Subject")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.glassProminent)
+            .disabled(model.subjectCount == 0 || model.isLifting)
+            .accessibilityHint("Lifts the highlighted subject")
+        }
+    }
+
+    /// After a lift: drag the thumbnail into the target, or confirm with a tap.
+    private func useRow(_ lifted: UIImage) -> some View {
+        VStack(spacing: 12) {
+            Text("Drag the subject into the box to use it")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 16) {
+                liftedThumbnail(lifted)
+
+                Image(systemName: "arrow.right")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+
+                dropTarget
+            }
+
+            HStack(spacing: 12) {
+                Button("Lift Different") { model.liftedImage = nil }
+                    .buttonStyle(.glass)
+                    .frame(minHeight: 44)
+                    .accessibilityHint("Clears this subject so you can lift another")
+
+                Button("Use Subject") { confirmLifted() }
+                    .buttonStyle(.glassProminent)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .accessibilityHint("Uses this subject in the editor")
+            }
+        }
+    }
+
+    private func liftedThumbnail(_ lifted: UIImage) -> some View {
+        Image(uiImage: lifted)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: 84, height: 84)
+            .background(LiftCheckerboard())
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+            )
+            .shadow(
+                color: .black.opacity(isDragging ? 0.45 : 0.2),
+                radius: isDragging ? 14 : 5,
+                y: isDragging ? 8 : 3
+            )
+            .scaleEffect(isDragging ? 1.08 : 1)
+            .offset(dragTranslation)
+            .zIndex(isDragging ? 2 : 0)
+            .gesture(dragToUse)
+            .accessibilityLabel("Lifted subject")
+            .accessibilityHint("Drag into the box, or use the Use Subject button")
+    }
+
+    private var dropTarget: some View {
+        VStack(spacing: 6) {
+            Image(systemName: isOverTarget ? "checkmark.circle.fill" : "arrow.down.to.line")
+                .font(.title2)
+            Text("Use this subject")
+                .font(.footnote.weight(.semibold))
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(isOverTarget ? Color.accentColor : Color.primary)
+        .frame(maxWidth: .infinity, minHeight: 84)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(isOverTarget ? Color.accentColor.opacity(0.18) : Color(uiColor: .secondarySystemFill))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(
+                    isOverTarget ? Color.accentColor : Color.secondary.opacity(0.5),
+                    style: StrokeStyle(lineWidth: 2, dash: [7, 5])
+                )
+        )
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { frame in
+            targetFrame = frame
+        }
+        .accessibilityLabel("Use this subject target")
+    }
+
+    private var dragToUse: some Gesture {
+        DragGesture(coordinateSpace: .global)
+            .onChanged { value in
+                isDragging = true
+                dragTranslation = value.translation
+                isOverTarget = targetFrame.contains(value.location)
+            }
+            .onEnded { value in
+                let dropped = targetFrame.contains(value.location)
+                withAnimation(.snappy) {
+                    isDragging = false
+                    dragTranslation = .zero
+                    isOverTarget = false
+                }
+                if dropped {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    confirmLifted()
+                }
+            }
+    }
+
+    // MARK: - Overlays
 
     private var analyzingOverlay: some View {
         VStack(spacing: 12) {
@@ -123,29 +251,16 @@ struct SubjectLiftView: View {
         .padding(.horizontal, 24)
     }
 
-    // MARK: - Lift
+    // MARK: - Actions
 
-    private func liftSelected() {
-        guard !model.isLifting else { return }
-        model.isLifting = true
-        Task {
-            defer { model.isLifting = false }
-            do {
-                if let cutout = try await model.lift() {
-                    onLift(cutout)
-                    dismiss()
-                } else {
-                    model.errorMessage = "Press and hold a subject, then tap Use Subject."
-                }
-            } catch {
-                model.errorMessage = "Couldn't lift that subject. Try again."
-            }
-        }
+    private func confirmLifted() {
+        guard let lifted = model.liftedImage else { return }
+        onLift(lifted)
+        dismiss()
     }
 }
 
-/// Holds the VisionKit interaction and the analysis state the SwiftUI chrome
-/// reads. The representable owns the views; this class only exposes results.
+/// Holds the VisionKit interaction and the lift state the SwiftUI chrome reads.
 @MainActor
 @Observable
 final class SubjectLiftModel {
@@ -153,21 +268,44 @@ final class SubjectLiftModel {
     var isAnalyzing = true
     var isLifting = false
     var errorMessage: String?
+    /// The background-removed subject awaiting confirmation, if any.
+    var liftedImage: UIImage?
 
-    /// The interaction installed on the image view. Not observed: analyzed
-    /// results are mirrored into the observed properties below.
+    /// The interaction installed on the image view. Not observed: results are
+    /// mirrored into the observed properties above.
     @ObservationIgnored var interaction: ImageAnalysisInteraction?
+    /// Guards against overlapping cut-out generations.
+    @ObservationIgnored private var isGenerating = false
 
-    /// Returns the background-removed image for the highlighted subject, or the
-    /// single subject when only one exists. `nil` when nothing is available.
-    @MainActor
-    func lift() async throws -> UIImage? {
-        guard let interaction else { return nil }
-        let highlighted = await interaction.highlightedSubjects
-        let all = await interaction.subjects
-        let chosen = highlighted.isEmpty ? all : highlighted
-        guard !chosen.isEmpty else { return nil }
-        return try await interaction.image(for: chosen)
+    /// Materializes the cut-out for the highlighted subject (or all subjects
+    /// when none is highlighted). Used by the manual button.
+    func liftFromInteraction() async {
+        guard let interaction else { return }
+        let highlighted = interaction.highlightedSubjects
+        let chosen = highlighted.isEmpty ? interaction.subjects : highlighted
+        guard !chosen.isEmpty else {
+            errorMessage = "Press and hold a subject first."
+            return
+        }
+        await generate(for: chosen)
+    }
+
+    /// Renders the background-removed image for `subjects` and stores it.
+    func generate(for subjects: Set<ImageAnalysisInteraction.Subject>) async {
+        guard let interaction, !isGenerating, !subjects.isEmpty else { return }
+        isGenerating = true
+        isLifting = true
+        defer {
+            isGenerating = false
+            isLifting = false
+        }
+        do {
+            liftedImage = try await interaction.image(for: subjects)
+        } catch {
+            if liftedImage == nil {
+                errorMessage = "Couldn't lift that subject. Try again."
+            }
+        }
     }
 }
 
@@ -205,17 +343,21 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {}
 
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.cancel()
+    }
+
     @MainActor
     final class Coordinator {
-        private var pollTask: Task<Void, Never>?
+        private var task: Task<Void, Never>?
 
         func analyze(
             image: UIImage,
             interaction: ImageAnalysisInteraction,
             model: SubjectLiftModel
         ) {
-            pollTask?.cancel()
-            pollTask = Task { @MainActor [weak model] in
+            task?.cancel()
+            task = Task { @MainActor [weak model] in
                 guard let model else { return }
 
                 do {
@@ -231,81 +373,62 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
                 }
 
                 // Subject lifting runs as its own pass a few seconds after the
-                // initial analysis, so `subjects` may start empty. Poll until it
-                // resolves or we time out (~12s).
+                // initial analysis, so `subjects` may start empty.
                 for _ in 0..<24 {
                     if Task.isCancelled { return }
-                    let subjects = await interaction.subjects
-                    if !subjects.isEmpty {
-                        model.subjectCount = subjects.count
-                        model.isAnalyzing = false
-                        return
-                    }
+                    if !interaction.subjects.isEmpty { break }
                     try? await Task.sleep(for: .seconds(0.5))
                 }
-                let remaining = await interaction.subjects
-                model.subjectCount = remaining.count
+                guard !Task.isCancelled else { return }
+                model.subjectCount = interaction.subjects.count
                 model.isAnalyzing = false
+
+                // Auto-materialize the cut-out when the user highlights a subject
+                // (press-and-hold), so a draggable thumbnail appears like Photos.
+                // Bounded so the task always ends even without dismantling.
+                var lastHighlighted: Set<ImageAnalysisInteraction.Subject> = []
+                for _ in 0..<300 {
+                    if Task.isCancelled { return }
+                    let highlighted = interaction.highlightedSubjects
+                    if highlighted.isEmpty {
+                        lastHighlighted = []
+                    } else if highlighted != lastHighlighted {
+                        lastHighlighted = highlighted
+                        await model.generate(for: highlighted)
+                    }
+                    try? await Task.sleep(for: .seconds(0.4))
+                }
             }
+        }
+
+        func cancel() {
+            task?.cancel()
+            task = nil
         }
     }
 }
 
-/// Converts a background-removed cut-out's alpha channel into the single-channel
-/// keep mask `MaskEditor` seeds from.
-///
-/// `MaskCompositor.seed` draws the mask through a vertically flipped transform,
-/// so this mirrors that same transform when reading alpha: whatever Core Graphics
-/// does when drawing into a bitmap context, the flip cancels out and the seeded
-/// mask lands upright. Alpha 255 = keep, 0 = remove.
-enum SubjectCutoutMask {
-    static func mask(fromAlphaOf cutout: UIImage) -> CGImage? {
-        let source = cutout.cgImage
-        guard let cgImage = source ?? cutout.upNormalized()?.cgImage else { return nil }
-
-        let width = cgImage.width
-        let height = cgImage.height
-        guard width > 0, height > 0 else { return nil }
-
-        var bytes = [UInt8](repeating: 0, count: width * height)
-        var rgba = [UInt8](repeating: 0, count: width * height * 4)
-        let created: Bool = rgba.withUnsafeMutableBytes { buffer in
-            guard let base = buffer.baseAddress,
-                  let context = CGContext(
-                      data: base,
-                      width: width,
-                      height: height,
-                      bitsPerComponent: 8,
-                      bytesPerRow: width * 4,
-                      space: CGColorSpaceCreateDeviceRGB(),
-                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                  ) else { return false }
-            context.translateBy(x: 0, y: CGFloat(height))
-            context.scaleBy(x: 1, y: -1)
-            context.interpolationQuality = .high
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
+/// Small checkerboard so a cut-out's transparency reads inside its thumbnail.
+private struct LiftCheckerboard: View {
+    var body: some View {
+        Canvas { context, size in
+            let cell: CGFloat = 8
+            let light = Color(uiColor: .systemGray5)
+            let dark = Color(uiColor: .systemGray3)
+            let columns = max(1, Int(ceil(size.width / cell)))
+            let rows = max(1, Int(ceil(size.height / cell)))
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    let rect = CGRect(
+                        x: CGFloat(column) * cell,
+                        y: CGFloat(row) * cell,
+                        width: cell,
+                        height: cell
+                    )
+                    let color = (row + column).isMultiple(of: 2) ? light : dark
+                    context.fill(Path(rect), with: .color(color))
+                }
+            }
         }
-        guard created else { return nil }
-
-        // Read the alpha channel (every 4th byte) into the grayscale keep mask.
-        for index in 0..<(width * height) {
-            bytes[index] = rgba[index * 4 + 3] >= 128 ? 255 : 0
-        }
-
-        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
-        return CGImage(
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bitsPerPixel: 8,
-            bytesPerRow: width,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )
     }
 }
