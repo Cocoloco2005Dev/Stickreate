@@ -55,12 +55,6 @@ struct PackEditorView: View {
 
     private var canExport: Bool {
         guard let pack else { return false }
-        // Mixed packs export one subset at a time, so it's exportable when
-        // either subset alone meets the minimum.
-        if pack.isMixed {
-            return pack.staticStickers.count >= Limits.minStickers
-                || pack.animatedStickers.count >= Limits.minStickers
-        }
         return pack.stickers.count >= Limits.minStickers
     }
 
@@ -179,42 +173,53 @@ struct PackEditorView: View {
                         }
                     }
                 }
+
+                footer(for: pack)
             }
             .padding(16)
         }
     }
 
     private func header(for pack: StickerPack) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Label(kindLabel(for: pack), systemImage: kindSymbol(for: pack))
-                Spacer()
-                Text("\(pack.stickers.count) of \(Limits.maxStickers)")
-            }
-
-            if pack.isMixed {
-                Text("\(pack.staticStickers.count) static · \(pack.animatedStickers.count) animated")
-                    .font(.caption)
-            }
-
-            if let folder = pack.folder {
-                Label(folder, systemImage: "folder")
-                    .font(.caption)
-            }
+        HStack(spacing: 8) {
+            Label(kindLabel(for: pack), systemImage: kindSymbol(for: pack))
+            Spacer()
+            Text("\(pack.stickers.count) of \(Limits.maxStickers)")
         }
         .font(.subheadline)
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
     }
 
+    /// Kind from the actual stickers: a sticker's preview is always a still, so
+    /// the cover alone can't tell you whether the pack is animated.
     private func kindLabel(for pack: StickerPack) -> String {
-        if pack.isMixed { return "Mixed" }
-        return pack.kind?.label ?? "Empty"
+        guard !pack.stickers.isEmpty else { return "Empty" }
+        return pack.animatedStickers.count > pack.staticStickers.count ? "Animated" : "Static"
     }
 
     private func kindSymbol(for pack: StickerPack) -> String {
-        if pack.isMixed { return "square.grid.2x2" }
-        return pack.kind == .animated ? "play.rectangle" : "photo"
+        guard !pack.stickers.isEmpty else { return "photo" }
+        return pack.animatedStickers.count > pack.staticStickers.count ? "play.rectangle" : "photo"
+    }
+
+    /// Subtle footer so the screen doesn't end in a void below a short grid.
+    private func footer(for pack: StickerPack) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("The first sticker is the pack's cover", systemImage: "star")
+
+            if let folder = pack.folder {
+                Label("Folder: \(folder)", systemImage: "folder")
+            }
+
+            if canExport {
+                Label("Ready to add to WhatsApp", systemImage: "checkmark.seal")
+            }
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
     }
 
     // MARK: - Primary export action
@@ -250,9 +255,6 @@ struct PackEditorView: View {
     }
 
     private func exportHint(for pack: StickerPack) -> String {
-        if pack.isMixed {
-            return "Each kind needs at least \(Limits.minStickers) stickers to export."
-        }
         let needed = max(0, Limits.minStickers - pack.stickers.count)
         return needed == 1
             ? "Add 1 more sticker to export to WhatsApp."
@@ -333,18 +335,8 @@ struct PackEditorView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        // Deliberately NOT `.bottomBar`: this screen lives inside a TabView, and
-        // iOS 26's floating glass tab bar covers the navigation bottom bar there.
-        ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                showingAdd = true
-            } label: {
-                Label("Add Sticker", systemImage: "plus")
-            }
-            .disabled(pack == nil || (pack?.stickers.count ?? 0) >= Limits.maxStickers)
-            .accessibilityLabel("Add sticker")
-        }
-
+        // The only add affordance is the dashed tile in the grid, so the bar
+        // just carries the options menu (kept separate from anything else).
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Rename…", systemImage: "pencil") {

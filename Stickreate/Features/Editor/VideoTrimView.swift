@@ -1,14 +1,12 @@
 import SwiftUI
 import UIKit
-import AVKit
 import AVFoundation
 
 /// Trims a video source, then asks whether to keep or cut the background.
 ///
-/// The trim screen is a dark editor: a full-bleed preview plus a bottom filmstrip
-/// of real frames with a white selection window. "Next" moves to an explicit
-/// background choice; "Apply" creates the sticker, keeping the source so it stays
-/// re-editable.
+/// The trim screen is a dark editor: a full-bleed preview with its own play
+/// control, plus a bottom filmstrip whose selection window can be moved or
+/// resized. Frame rate is automatic. "Next" moves to the background choice.
 @MainActor
 struct VideoTrimView: View {
     let source: StickerSource
@@ -30,12 +28,13 @@ struct VideoTrimView: View {
 
     @State private var lowerBound: TimeInterval = 0
     @State private var upperBound: TimeInterval = 0
-    @State private var fps: Int = min(max(SettingsStore.shared.defaultFPS, 5), 30)
+    @State private var playhead: TimeInterval = 0
 
     @State private var player: AVPlayer?
     @State private var isPlaying = false
+    @State private var timeObserver: Any?
     @State private var playheadImage: UIImage?
-    @State private var scrubTask: Task<Void, Never>?
+    @State private var thumbTask: Task<Void, Never>?
 
     @State private var filmstrip: [UIImage] = []
 
@@ -45,24 +44,11 @@ struct VideoTrimView: View {
     @State private var stage: StickerCreationStage?
     @State private var errorMessage: String?
 
-    private static let standardFPSOptions = [5, 10, 15, 20, 24, 30]
-
-    /// Includes the initial default fps even when it isn't a standard option,
-    /// so the segmented control always has a selected value.
-    private var fpsOptions: [Int] {
-        let base = Self.standardFPSOptions
-        return base.contains(fps) ? base : (base + [fps]).sorted()
-    }
-
     private var sourceURL: URL { StickerSourceStore.url(for: source) }
 
-    private var clipLength: TimeInterval {
-        max(0, upperBound - lowerBound)
-    }
+    private var duration: TimeInterval { draft?.duration ?? 0 }
 
-    private var estimatedFrames: Int {
-        max(1, Int((Double(fps) * clipLength).rounded()))
-    }
+    private var clipLength: TimeInterval { max(0, upperBound - lowerBound) }
 
     var body: some View {
         NavigationStack {
@@ -73,7 +59,7 @@ struct VideoTrimView: View {
         }
         .preferredColorScheme(.dark)
         .task { await load() }
-        .onDisappear { player?.pause() }
+        .onDisappear { teardownPlayer() }
         .alert(
             "Couldn't create sticker",
             isPresented: Binding(
@@ -96,7 +82,9 @@ struct VideoTrimView: View {
                 goBack()
             } label: {
                 Image(systemName: "chevron.left")
+                    .fontWeight(.semibold)
             }
+            .tint(.white)
             .disabled(isCreating)
             .accessibilityLabel(step == .background ? "Back to trim" : "Back")
         }
@@ -104,11 +92,12 @@ struct VideoTrimView: View {
         ToolbarItem(placement: .confirmationAction) {
             Button(step == .trim ? "Next" : "Apply") {
                 if step == .trim {
-                    step = .background
+                    next()
                 } else {
                     apply()
                 }
             }
+            .fontWeight(.semibold)
             .tint(.blue)
             .disabled(draft == nil || isCreating || (step == .trim && clipLength <= 0))
         }
@@ -118,11 +107,11 @@ struct VideoTrimView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let draft {
-            ZStack {
+        if draft != nil {
+            ZStack(alignment: .top) {
                 switch step {
                 case .trim:
-                    trimScreen(for: draft)
+                    trimScreen
 
                 case .background:
                     BackgroundChoiceView(previewImage: playheadImage, choice: $backgroundChoice)
@@ -130,7 +119,10 @@ struct VideoTrimView: View {
                 }
 
                 if isCreating {
-                    creatingOverlay
+                    progressBanner
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
         } else if isLoading {
@@ -149,50 +141,87 @@ struct VideoTrimView: View {
         }
     }
 
-    private func trimScreen(for draft: VideoDraft) -> some View {
+    private var trimScreen: some View {
         VStack(spacing: 0) {
             previewArea
-            bottomPanel(for: draft)
+            bottomPanel
         }
         .background(Color.black.ignoresSafeArea())
     }
+
+    // MARK: - Preview
 
     private var previewArea: some View {
         ZStack {
             Color.black
 
-            if isPlaying {
-                VideoPlayer(player: player)
-            } else if let playheadImage {
-                Image(uiImage: playheadImage)
-                    .resizable()
-                    .scaledToFit()
+            if let player {
+                PlayerLayerView(player: player)
             } else {
                 ProgressView()
                     .tint(.white)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .onTapGesture { togglePlayback() }
-        .accessibilityElement()
-        .accessibilityLabel("Video preview")
-        .accessibilityHint("Double tap to play or pause")
+        .overlay { playButton }
+        .overlay(alignment: .bottom) { timeBar }
+        .accessibilityElement(children: .contain)
     }
 
-    private func bottomPanel(for draft: VideoDraft) -> some View {
-        VStack(spacing: 14) {
-            fpsControl
+    private var playButton: some View {
+        Button {
+            togglePlayback()
+        } label: {
+            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                .font(.system(size: 26, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 68, height: 68)
+                .background(.black.opacity(0.4), in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.5), lineWidth: 1.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isPlaying ? "Pause" : "Play")
+        .accessibilityHint("Plays the video preview")
+    }
+
+    private var timeBar: some View {
+        HStack {
+            timeChip(timeString(playhead))
+            Spacer(minLength: 8)
+            timeChip(timeString(duration))
+        }
+        .padding(12)
+    }
+
+    private func timeChip(_ text: String) -> some View {
+        Text(text)
+            .font(.caption.monospacedDigit().weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.45), in: Capsule())
+    }
+
+    // MARK: - Bottom panel
+
+    private var bottomPanel: some View {
+        VStack(spacing: 12) {
+            selectionReadout
 
             FilmstripView(
                 thumbnails: filmstrip,
-                duration: draft.duration,
-                minSpan: min(0.2, draft.duration),
-                maxSpan: min(Limits.maxAnimationDuration, draft.duration),
+                duration: duration,
+                minSpan: min(0.2, duration),
+                maxSpan: min(Limits.maxAnimationDuration, duration),
                 lower: $lowerBound,
                 upper: $upperBound,
                 onScrub: { time in scrub(to: time) }
             )
+
+            Text("WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so the app compresses automatically.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -200,54 +229,35 @@ struct VideoTrimView: View {
         .background(Color.black)
     }
 
-    private var fpsControl: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Text("Frame rate")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("\(fps) fps · ≈ \(estimatedFrames) frames")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
+    private var selectionReadout: some View {
+        HStack(spacing: 6) {
+            Text("\(seconds(lowerBound))–\(seconds(upperBound)) s")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.white)
 
-            Picker("Frame rate", selection: $fps) {
-                ForEach(fpsOptions, id: \.self) { value in
-                    Text("\(value)").tag(value)
-                }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Frame rate")
-            .accessibilityValue(Text("\(fps) frames per second"))
-
-            Text("WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so the app compresses and may reduce frames.")
-                .font(.caption2)
+            Text("· \(seconds(clipLength)) s")
+                .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 0)
         }
     }
 
-    private var creatingOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.35)
-                .ignoresSafeArea()
+    // MARK: - Progress banner (top, inline — never covers the caption below)
 
-            VStack(spacing: 14) {
-                stageIndicator
+    private var progressBanner: some View {
+        HStack(spacing: 12) {
+            stageIndicator
 
-                Text(stageLabel)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-            }
-            .padding(28)
-            .background(
-                Color.black.opacity(0.72),
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-            )
+            Text(stageLabel)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(.black.opacity(0.8), in: Capsule())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(stageLabel)
     }
@@ -258,9 +268,11 @@ struct VideoTrimView: View {
             // Determinate stages only; `.compressing` is indeterminate.
             ProgressView(value: min(max(fraction, 0), 1))
                 .progressViewStyle(.circular)
+                .controlSize(.small)
                 .tint(.white)
         } else {
             ProgressView()
+                .controlSize(.small)
                 .tint(.white)
         }
     }
@@ -287,13 +299,25 @@ struct VideoTrimView: View {
             draft = loaded
             lowerBound = 0
             upperBound = min(loaded.duration, Limits.maxAnimationDuration)
+            playhead = lowerBound
 
             let player = AVPlayer(url: sourceURL)
             player.actionAtItemEnd = .pause
             self.player = player
 
+            timeObserver = player.addPeriodicTimeObserver(
+                forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+                queue: .main
+            ) { time in
+                playhead = CMTimeGetSeconds(time)
+            }
+
             isLoading = false
-            scrub(to: lowerBound)
+            player.seek(
+                to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
             loadFilmstrip(for: loaded)
         } catch {
             isLoading = false
@@ -308,16 +332,26 @@ struct VideoTrimView: View {
         Task { await load() }
     }
 
+    private func teardownPlayer() {
+        player?.pause()
+        if let timeObserver, let player {
+            player.removeTimeObserver(timeObserver)
+        }
+        timeObserver = nil
+        thumbTask?.cancel()
+        thumbTask = nil
+    }
+
     /// Streams filmstrip frames in the background; the UI never waits on them.
     private func loadFilmstrip(for draft: VideoDraft) {
         let url = sourceURL
-        let duration = draft.duration
+        let total = draft.duration
         let count = 16
 
         Task {
             var frames: [UIImage] = []
             for index in 0..<count {
-                let time = duration * (Double(index) + 0.5) / Double(count)
+                let time = total * (Double(index) + 0.5) / Double(count)
                 guard let image = try? await FrameExtractor.thumbnail(fromVideoAt: url, at: time) else {
                     continue
                 }
@@ -327,7 +361,7 @@ struct VideoTrimView: View {
         }
     }
 
-    // MARK: - Preview / playhead
+    // MARK: - Playback / scrubbing
 
     private func scrub(to time: TimeInterval) {
         guard let player else { return }
@@ -340,17 +374,7 @@ struct VideoTrimView: View {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         )
-        loadPlayheadImage(at: time)
-    }
-
-    private func loadPlayheadImage(at time: TimeInterval) {
-        scrubTask?.cancel()
-        let url = sourceURL
-        scrubTask = Task {
-            let image = try? await FrameExtractor.thumbnail(fromVideoAt: url, at: time)
-            guard !Task.isCancelled else { return }
-            playheadImage = image
-        }
+        playhead = time
     }
 
     private func togglePlayback() {
@@ -358,15 +382,28 @@ struct VideoTrimView: View {
         if isPlaying {
             player.pause()
             isPlaying = false
-            loadPlayheadImage(at: CMTimeGetSeconds(player.currentTime()))
         } else {
-            player.seek(
-                to: CMTime(seconds: lowerBound, preferredTimescale: 600),
-                toleranceBefore: .zero,
-                toleranceAfter: .zero
-            )
+            if playhead >= upperBound - 0.05 || playhead < lowerBound - 0.05 {
+                player.seek(
+                    to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+            }
             player.play()
             isPlaying = true
+        }
+    }
+
+    /// Loads a still for the background screen's "Original" swatch.
+    private func prepareBackgroundPreview() {
+        let url = sourceURL
+        let time = min(max(playhead, lowerBound), upperBound)
+        thumbTask?.cancel()
+        thumbTask = Task {
+            let image = try? await FrameExtractor.thumbnail(fromVideoAt: url, at: time)
+            guard !Task.isCancelled else { return }
+            playheadImage = image
         }
     }
 
@@ -378,6 +415,11 @@ struct VideoTrimView: View {
         } else {
             dismiss()
         }
+    }
+
+    private func next() {
+        prepareBackgroundPreview()
+        step = .background
     }
 
     @MainActor
@@ -395,7 +437,7 @@ struct VideoTrimView: View {
                 let sticker = try await StickerFactory.makeAnimatedSticker(
                     from: draft,
                     range: range,
-                    fps: Double(fps),
+                    fps: 0,                     // automatic frame rate
                     removeBackground: removeBackground,
                     source: source,
                     onStage: { newStage in
@@ -414,10 +456,47 @@ struct VideoTrimView: View {
             }
         }
     }
+
+    private func seconds(_ value: TimeInterval) -> String {
+        String(format: "%.1f", value)
+    }
+
+    private func timeString(_ value: TimeInterval) -> String {
+        guard value.isFinite, value >= 0 else { return "0:00" }
+        let total = Int(value.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
 }
 
-/// Continuous strip of real frames with a white selection window and two thick
-/// vertical handles. Content layer — never glass.
+/// Bare `AVPlayerLayer` so the preview has no built-in controls — the screen
+/// draws its own play button. Content layer, never glass.
+private struct PlayerLayerView: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> PlayerView {
+        let view = PlayerView()
+        view.backgroundColor = .black
+        view.playerLayer.videoGravity = .resizeAspect
+        view.playerLayer.player = player
+        return view
+    }
+
+    func updateUIView(_ uiView: PlayerView, context: Context) {
+        uiView.playerLayer.player = player
+    }
+
+    final class PlayerView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+
+        var playerLayer: AVPlayerLayer {
+            // `layerClass` guarantees the backing layer is an `AVPlayerLayer`.
+            layer as! AVPlayerLayer
+        }
+    }
+}
+
+/// Continuous strip of real frames with a white selection window. Dragging the
+/// centre moves the window; dragging an edge resizes it. Content layer.
 private struct FilmstripView: View {
     let thumbnails: [UIImage]
     let duration: TimeInterval
@@ -428,13 +507,18 @@ private struct FilmstripView: View {
     let onScrub: (TimeInterval) -> Void
 
     @State private var activeHandle: Handle?
+    @State private var initialLower: TimeInterval = 0
+    @State private var initialUpper: TimeInterval = 0
+    @State private var moveStartTime: TimeInterval = 0
 
     private enum Handle {
         case lower
         case upper
+        case move
     }
 
     private let stripHeight: CGFloat = 64
+    private let maxGrab: CGFloat = 28
 
     var body: some View {
         GeometryReader { proxy in
@@ -478,21 +562,30 @@ private struct FilmstripView: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         if activeHandle == nil {
-                            let toLower = abs(value.startLocation.x - lowerX)
-                            let toUpper = abs(value.startLocation.x - upperX)
-                            activeHandle = toLower <= toUpper ? .lower : .upper
+                            begin(
+                                at: value.startLocation.x,
+                                lowerX: lowerX,
+                                upperX: upperX,
+                                width: width
+                            )
                         }
                         let proposed = time(for: value.location.x, width: width)
                         switch activeHandle {
                         case .lower:
                             lower = clampedLower(proposed)
+                            onScrub(lower)
                         case .upper:
                             upper = clampedUpper(proposed)
+                            onScrub(upper)
+                        case .move:
+                            let span = initialUpper - initialLower
+                            let delta = proposed - moveStartTime
+                            let newLower = min(max(0, initialLower + delta), max(0, duration - span))
+                            lower = newLower
+                            upper = newLower + span
+                            onScrub(lower)
                         case nil:
                             break
-                        }
-                        if let handle = activeHandle {
-                            onScrub(handle == .lower ? lower : upper)
                         }
                     }
                     .onEnded { _ in activeHandle = nil }
@@ -502,7 +595,7 @@ private struct FilmstripView: View {
         .accessibilityElement()
         .accessibilityLabel("Trim range")
         .accessibilityValue(Text("\(seconds(lower)) to \(seconds(upper)) seconds"))
-        .accessibilityHint("Drag the white handles to choose the clip")
+        .accessibilityHint("Drag the selection to move it, or its edges to resize")
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment:
@@ -514,6 +607,31 @@ private struct FilmstripView: View {
             @unknown default:
                 break
             }
+        }
+    }
+
+    private func begin(at startX: CGFloat, lowerX: CGFloat, upperX: CGFloat, width: CGFloat) {
+        initialLower = lower
+        initialUpper = upper
+        let startTime = time(for: startX, width: width)
+        moveStartTime = startTime
+
+        // Edges take a proportional slice so the middle stays draggable even
+        // when the selection window is narrow.
+        let windowWidth = upperX - lowerX
+        let edgeGrab = min(maxGrab, windowWidth * 0.35)
+
+        let nearLower = abs(startX - lowerX) <= edgeGrab
+        let nearUpper = abs(startX - upperX) <= edgeGrab
+
+        if nearLower {
+            activeHandle = .lower
+        } else if nearUpper {
+            activeHandle = .upper
+        } else if startTime > lower && startTime < upper {
+            activeHandle = .move
+        } else {
+            activeHandle = abs(startX - lowerX) <= abs(startX - upperX) ? .lower : .upper
         }
     }
 

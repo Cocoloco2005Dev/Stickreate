@@ -13,6 +13,7 @@ struct ExportSheet: View {
     @State private var exportedKinds: Set<StickerKind> = []
     @State private var errorMessage: String?
     @State private var shareItem: ShareItem?
+    @State private var detent: PresentationDetent = .large
 
     private struct ShareItem: Identifiable {
         let id = UUID()
@@ -44,7 +45,7 @@ struct ExportSheet: View {
                 shareItem = nil
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large], selection: $detent)
         .alert(
             "Couldn't add pack",
             isPresented: Binding(
@@ -130,6 +131,8 @@ struct ExportSheet: View {
                 shareFile()
             } label: {
                 Label("Share Pack File", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
             }
             .buttonStyle(.glassProminent)
 
@@ -160,6 +163,8 @@ struct ExportSheet: View {
                     export(stickers: pack.stickers, kind: pack.kind ?? .static)
                 } label: {
                     Label("Add to WhatsApp", systemImage: "plus.message")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
                 }
                 .buttonStyle(.glassProminent)
                 .tint(.green)
@@ -194,6 +199,7 @@ struct ExportSheet: View {
                 } label: {
                     Label("Add \(kind.label.lowercased()) pack (\(count))", systemImage: symbol(for: kind))
                         .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
                 }
                 .buttonStyle(.glass)
                 .tint(.green)

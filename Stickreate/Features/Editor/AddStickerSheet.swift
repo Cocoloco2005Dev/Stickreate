@@ -62,11 +62,14 @@ struct AddStickerSheet: View {
                         Button("Cancel") { dismiss() }
                             .disabled(isProcessing)
                     }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button(addButtonTitle) {
-                            Task { await commit() }
+                    // No Add action until there is something in the queue.
+                    if !queue.isEmpty {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Add \(queue.count)") {
+                                Task { await commit() }
+                            }
+                            .disabled(isProcessing || isImporting || remaining == 0)
                         }
-                        .disabled(queue.isEmpty || isProcessing || isImporting || remaining == 0)
                     }
                 }
         }
@@ -101,10 +104,6 @@ struct AddStickerSheet: View {
         }
     }
 
-    private var addButtonTitle: String {
-        queue.isEmpty ? "Add" : "Add \(queue.count)"
-    }
-
     // MARK: - Content
 
     @ViewBuilder
@@ -127,36 +126,148 @@ struct AddStickerSheet: View {
     }
 
     private var pickerState: some View {
-        VStack(spacing: 20) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                packSummary
+                actionsRow
+                existingStickersSection
+                howToSection
+            }
+            .padding(20)
+        }
+    }
+
+    // MARK: - Picker helpers
+
+    private var packSummary: some View {
+        HStack(spacing: 12) {
+            packCover
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(pack?.name ?? "This pack")
+                    .font(.headline)
+                    .lineLimit(1)
+
+                Text("\(pack?.stickers.count ?? 0) of \(Limits.maxStickers) · \(packKindLabel)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var packCover: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color(uiColor: .secondarySystemBackground))
+            .frame(width: 56, height: 56)
+            .overlay {
+                if let image = packCoverImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(6)
+                } else {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityHidden(true)
+    }
+
+    private var packCoverImage: UIImage? {
+        guard let pack, let data = pack.traySourcePreview else { return nil }
+        return UIImage(data: data)
+    }
+
+    private var packKindLabel: String {
+        guard let pack, !pack.stickers.isEmpty else { return "Empty" }
+        return pack.animatedStickers.count > pack.staticStickers.count ? "Animated" : "Static"
+    }
+
+    private var actionsRow: some View {
+        HStack(spacing: 12) {
             PhotosPicker(
                 selection: $pickerSelection,
                 maxSelectionCount: remaining,
                 matching: .any(of: [.images, .videos, .livePhotos])
             ) {
-                VStack(spacing: 10) {
-                    Image(systemName: "photo.badge.plus")
-                        .font(.system(size: 36, weight: .regular))
-                    Text("Choose Photos or Videos")
-                        .font(.headline)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 30)
+                actionTile("Photos", systemImage: "photo.on.rectangle.angled")
             }
             .buttonStyle(.glassProminent)
             .accessibilityLabel("Choose photos or videos")
 
             if isCameraAvailable {
-                cameraButton
+                Button {
+                    requestCamera()
+                } label: {
+                    actionTile("Camera", systemImage: "camera")
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Take a photo")
             }
+        }
+    }
 
-            Text("Pick up to \(remaining) \(remaining == 1 ? "item" : "items"). Photos open an editor; videos open a trim screen; GIFs convert automatically.")
-                .font(.footnote)
+    private func actionTile(_ title: String, systemImage: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.title2)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 76)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var existingStickersSection: some View {
+        let stickers = pack?.stickers ?? []
+        if !stickers.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Already in this pack")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(stickers.prefix(12)) { item in
+                            ExistingStickerThumb(item: item)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    private var howToSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("How it works")
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+
+            howToStep(1, "Pick photos, videos, or GIFs")
+            howToStep(2, "Edit or trim each item")
+            howToStep(3, "Tap Add to save them to the pack")
+        }
+    }
+
+    private func howToStep(_ number: Int, _ title: String) -> some View {
+        HStack(spacing: 10) {
+            Text("\(number)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(Color.accentColor, in: Circle())
+
+            Text(title)
+                .font(.subheadline)
 
             Spacer(minLength: 0)
         }
-        .padding(20)
     }
 
     private var queueState: some View {
@@ -230,18 +341,6 @@ struct AddStickerSheet: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-    }
-
-    private var cameraButton: some View {
-        Button {
-            requestCamera()
-        } label: {
-            Label("Take Photo", systemImage: "camera")
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-        }
-        .buttonStyle(.glass)
-        .accessibilityLabel("Take a photo")
     }
 
     private var cameraIconButton: some View {
@@ -506,6 +605,40 @@ struct AddStickerSheet: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+/// Compact preview of a sticker already in the pack. Content layer — never glass.
+private struct ExistingStickerThumb: View {
+    let item: StickerItem
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color(uiColor: .secondarySystemBackground))
+            .frame(width: 56, height: 56)
+            .overlay {
+                if let image = UIImage(data: item.previewData) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(4)
+                } else {
+                    Image(systemName: "photo")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if item.kind == .animated {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(3)
+                        .background(.black.opacity(0.45), in: Circle())
+                        .padding(4)
+                }
+            }
+            .accessibilityHidden(true)
     }
 }
 

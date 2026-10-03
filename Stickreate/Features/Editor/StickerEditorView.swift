@@ -4,10 +4,11 @@ import UIKit
 /// "Adjust" editor for a single still image.
 ///
 /// Checkerboard canvas with pinch-to-zoom / drag-to-pan above a control layer:
-/// a contextual row, the tool grid, and the Cancel · undo · redo · Apply bar.
-/// Everything is non-destructive through `MaskEditor`; nothing is removed until
-/// the user asks for it — the default tool is Full (keep everything). Background
-/// removal is `Intelligent Cut`, which runs Apple Vision on-device.
+/// a contextual row, a 2×N tool grid, and the Cancel · undo/redo · Apply bar.
+/// Everything is non-destructive through `MaskEditor`. Background removal is
+/// `Intelligent Cut`, which lifts subjects on-device with Apple Vision and lets
+/// the user tap each detected instance to keep or remove it. Nothing is removed
+/// until the user asks for it.
 @MainActor
 struct StickerEditorView: View {
     let source: StickerSource
@@ -20,13 +21,11 @@ struct StickerEditorView: View {
     @State private var didLoad = false
     @State private var loadErrorMessage: String?
 
-    @State private var activeTool: Tool = .full
+    @State private var activeTool: Tool = .original
     @State private var hasCommittedChange = false
-    /// Mirrors the editor's background mode so switching to Full only counts
-    /// as a change when something was actually removed.
-    @State private var backgroundRemoved = false
 
-    /// Keep / Remove intent for the Rectangle and Lasso tools.
+    /// Keep / Remove intent for Rectangle and Lasso (and the paint concept for
+    /// Brush/Erase). A mode, never a commit action.
     @State private var selectionMode: SelectionMode = .remove
 
     // Canvas transform
@@ -35,8 +34,10 @@ struct StickerEditorView: View {
     @State private var pan: CGSize = .zero
     @State private var panStart: CGSize = .zero
     @State private var panning = false
+    @State private var didPan = false
     @State private var magnifying = false
     @State private var showZoomHint = true
+    @State private var didSetInitialZoom = false
 
     // Brush
     @State private var lastPoint: CGPoint?
@@ -52,9 +53,14 @@ struct StickerEditorView: View {
     @State private var cropDragging = false
     @State private var cropActiveHandle: CropHandle?
 
-    // Intelligent Cut
+    // Intelligent Cut instances
     @State private var isRemoving = false
-    @State private var removalProgress: Double = 0
+    @State private var removalProgress = 0.0
+    @State private var hasInstances = false
+    /// The instances the user chose to keep (mirror of the applied selection).
+    @State private var chosenInstances: Set<Int> = []
+    @State private var instanceFeedback: String?
+    @State private var feedbackTask: Task<Void, Never>?
 
     // Apply / encode
     @State private var isSaving = false
@@ -105,15 +111,9 @@ struct StickerEditorView: View {
             }
             .overlay {
                 if isRemoving {
-                    busyOverlay(
-                        title: removalText,
-                        subtitle: "On-device Apple Vision"
-                    )
+                    busyOverlay(title: removalText, subtitle: "On-device Apple Vision")
                 } else if isSaving {
-                    busyOverlay(
-                        title: applyProgressText,
-                        subtitle: nil
-                    )
+                    busyOverlay(title: applyProgressText, subtitle: nil)
                 }
             }
             .alert("Something went wrong", isPresented: alertBinding) {
@@ -148,6 +148,12 @@ struct StickerEditorView: View {
 
                 canvasOverlay(frame: frame)
 
+                if let instanceFeedback {
+                    infoPill(instanceFeedback)
+                } else if activeTool == .aiCut && hasInstances {
+                    infoPill(subjectCountText)
+                }
+
                 if showZoomHint && !isRemoving && !isSaving {
                     zoomHint
                 }
@@ -157,6 +163,7 @@ struct StickerEditorView: View {
             .contentShape(Rectangle())
             .gesture(dragGesture(editor: editor, frame: frame, canvas: size))
             .simultaneousGesture(magnifyGesture(canvas: size, imageSize: editor.base.size))
+            .onAppear { applyInitialZoom(canvas: size, imageSize: editor.base.size) }
         }
     }
 
@@ -170,6 +177,21 @@ struct StickerEditorView: View {
                 .padding(.vertical, 8)
                 .background(Capsule().fill(Color.black.opacity(0.65)))
                 .padding(.bottom, 18)
+        }
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
+
+    private func infoPill(_ text: String) -> some View {
+        VStack {
+            Text(text)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(Color.black.opacity(0.7)))
+                .padding(.top, 14)
+            Spacer()
         }
         .allowsHitTesting(false)
         .transition(.opacity)
@@ -240,10 +262,9 @@ struct StickerEditorView: View {
 
     /// Dashed region overlay tinted by the current Keep / Remove intent.
     private func regionOverlay(path: Path) -> some View {
-        let color: Color = selectionMode == .keep ? .green : .red
-        return ZStack {
-            path.fill(color.opacity(0.18))
-            path.stroke(color, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+        ZStack {
+            path.fill(selectionMode.color.opacity(0.18))
+            path.stroke(selectionMode.color, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
         }
         .allowsHitTesting(false)
     }
@@ -275,11 +296,13 @@ struct StickerEditorView: View {
                     updateLasso(value: value, frame: frame)
                 case .crop:
                     updateCrop(value: value, frame: frame)
-                case .full, .aiCut:
+                case .original:
                     panCanvas(value: value, canvas: canvas, imageSize: editor.base.size)
+                case .aiCut:
+                    panIntelligentCut(value: value, canvas: canvas, imageSize: editor.base.size)
                 }
             }
-            .onEnded { _ in
+            .onEnded { value in
                 guard !magnifying else { return }
 
                 switch activeTool {
@@ -295,7 +318,9 @@ struct StickerEditorView: View {
                     commitLasso(editor: editor)
                 case .crop:
                     finishCrop()
-                case .full, .aiCut:
+                case .aiCut:
+                    finishIntelligentCutGesture(editor: editor, value: value, frame: frame)
+                case .original:
                     panning = false
                     panStart = pan
                 }
@@ -382,6 +407,75 @@ struct StickerEditorView: View {
         guard lassoPoints.count >= 3 else { return }
         editor.selectLasso(lassoPoints, removing: selectionMode.removing)
         hasCommittedChange = true
+    }
+
+    // MARK: - Intelligent Cut instance taps
+
+    /// A short drag pans; a tap toggles the subject instance under the finger.
+    private func finishIntelligentCutGesture(
+        editor: MaskEditor,
+        value: DragGesture.Value,
+        frame: CGRect
+    ) {
+        let wasPan = didPan
+        defer {
+            panning = false
+            didPan = false
+            panStart = pan
+        }
+        guard !wasPan else { return }
+        guard hasInstances else {
+            flash("No subjects to tap here")
+            return
+        }
+        let point = StickerGeometry.normalized(value.startLocation, in: frame)
+        guard let id = editor.instanceID(at: point) else {
+            flash("No subject under here")
+            return
+        }
+
+        var chosen = chosenInstances
+        let keeping = !chosen.contains(id)
+        if keeping { chosen.insert(id) } else { chosen.remove(id) }
+        chosenInstances = chosen
+        editor.setInstances(chosen)
+        hasCommittedChange = true
+        flash(keeping ? "Subject kept" : "Subject removed")
+    }
+
+    /// Pans only after the drag is clearly not a tap, so tapping a subject
+    /// doesn't nudge the canvas.
+    private func panIntelligentCut(value: DragGesture.Value, canvas: CGSize, imageSize: CGSize) {
+        if !panning {
+            panning = true
+            didPan = false
+            panStart = pan
+        }
+        let moved = (value.translation.width * value.translation.width
+            + value.translation.height * value.translation.height).squareRoot()
+        if moved >= 12 { didPan = true }
+        guard didPan else { return }
+        let candidate = CGSize(
+            width: panStart.width + value.translation.width,
+            height: panStart.height + value.translation.height
+        )
+        pan = StickerGeometry.clampedPan(candidate, canvas: canvas, imageSize: imageSize, zoom: zoom)
+    }
+
+    private var subjectCountText: String {
+        let count = chosenInstances.count
+        if count == 0 { return "Showing the full image" }
+        return count == 1 ? "1 subject kept" : "\(count) subjects kept"
+    }
+
+    private func flash(_ text: String) {
+        instanceFeedback = text
+        feedbackTask?.cancel()
+        feedbackTask = Task {
+            try? await Task.sleep(for: .seconds(1.2))
+            if Task.isCancelled { return }
+            instanceFeedback = nil
+        }
     }
 
     // MARK: - Crop gestures
@@ -488,7 +582,21 @@ struct StickerEditorView: View {
         }
     }
 
-    // MARK: - Geometry mapping
+    // MARK: - Geometry
+
+    /// Fills the canvas at open so the image doesn't sit inside wide checkerboard
+    /// margins, capped so extreme aspect ratios don't crop too aggressively.
+    private func applyInitialZoom(canvas: CGSize, imageSize: CGSize) {
+        guard !didSetInitialZoom,
+              canvas.width > 0, canvas.height > 0,
+              imageSize.width > 0, imageSize.height > 0 else { return }
+        didSetInitialZoom = true
+        let fit = min(canvas.width / imageSize.width, canvas.height / imageSize.height)
+        let fill = max(canvas.width / imageSize.width, canvas.height / imageSize.height)
+        guard fit > 0 else { return }
+        zoom = min(max(fill / fit, 1), 2)
+        pan = .zero
+    }
 
     private func cropFrame(frame: CGRect) -> CGRect {
         CGRect(
@@ -544,8 +652,8 @@ struct StickerEditorView: View {
             VStack(spacing: 6) {
                 brushRow
                 Text(activeTool == .brush
-                     ? "Brush restores areas you removed."
-                     : "Erase removes areas.")
+                     ? "Brush keeps pixels (restore)."
+                     : "Erase removes pixels.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -553,11 +661,10 @@ struct StickerEditorView: View {
         case .rectangle, .lasso:
             VStack(spacing: 6) {
                 modeToggle
-                Text(activeTool == .rectangle
-                     ? "Drag a rectangle, then keep or remove it."
-                     : "Draw around a region, then keep or remove it.")
+                Text("Selection mode · Keep restores pixels, Remove erases them.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
 
         case .crop:
@@ -571,17 +678,38 @@ struct StickerEditorView: View {
 
                 Button("Reset") { resetCrop() }
                     .buttonStyle(.glass)
+                    .frame(minHeight: 44)
                     .disabled(!hasCrop)
                     .accessibilityLabel("Reset crop")
             }
 
         case .aiCut:
-            Text("Intelligent Cut lifts the subject on-device with Apple Vision.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                if hasInstances {
+                    Text("Tap a subject to keep or remove it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(subjectCountText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.primary)
+                } else if editor?.hasSubject == true {
+                    Text("No separate subjects found. Refine with the manual tools.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Use Brush") { select(.brush) }
+                        .buttonStyle(.glass)
+                        .frame(minHeight: 44)
+                        .accessibilityLabel("Use the brush tool")
+                } else {
+                    Text("Intelligent Cut finds subjects on-device with Apple Vision.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
 
-        case .full:
-            Text("Full keeps the whole image — nothing is removed.")
+        case .original:
+            Text("Brings back the whole image. Nothing is removed.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -604,31 +732,37 @@ struct StickerEditorView: View {
         .padding(.horizontal, 4)
     }
 
-    // MARK: - Keep / Remove
+    // MARK: - Keep / Remove (equal-weight mode control)
 
     private var modeToggle: some View {
-        HStack(spacing: 0) {
-            modeButton(.keep)
-            modeButton(.remove)
+        HStack(spacing: 2) {
+            modeSegment(.keep)
+            modeSegment(.remove)
         }
-        .padding(3)
+        .padding(2)
         .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
     }
 
-    private func modeButton(_ mode: SelectionMode) -> some View {
+    private func modeSegment(_ mode: SelectionMode) -> some View {
         let selected = selectionMode == mode
         return Button {
             selectionMode = mode
         } label: {
             Text(mode.title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(selected ? Color.white : Color.secondary)
-                .frame(maxWidth: .infinity, minHeight: 36)
-                .background(selected ? mode.color : Color.clear, in: Capsule())
+                .foregroundStyle(Color.primary)
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .background {
+                    if selected {
+                        Capsule()
+                            .fill(Color(uiColor: .systemBackground))
+                            .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                    }
+                }
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(mode.title) selection")
+        .accessibilityLabel("\(mode.title) mode")
         .accessibilityAddTraits(selected ? .isSelected : AccessibilityTraits())
     }
 
@@ -643,7 +777,7 @@ struct StickerEditorView: View {
                 toolButton(.crop)
             }
             HStack(spacing: 8) {
-                toolButton(.full)
+                toolButton(.original)
                 toolButton(.brush)
                 toolButton(.erase)
             }
@@ -683,6 +817,7 @@ struct StickerEditorView: View {
     private var actionBar: some View {
         HStack(spacing: 8) {
             Button("Cancel") { cancel() }
+                .foregroundStyle(.secondary)
                 .frame(minWidth: 44, minHeight: 44, alignment: .leading)
 
             Spacer(minLength: 0)
@@ -714,9 +849,10 @@ struct StickerEditorView: View {
             Spacer(minLength: 0)
 
             Button("Apply") { apply() }
-                .fontWeight(.semibold)
+                .buttonStyle(.glassProminent)
                 .disabled(!hasEdits || isRemoving || isSaving)
                 .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                .accessibilityLabel("Apply changes")
         }
         .font(.body)
     }
@@ -740,12 +876,13 @@ struct StickerEditorView: View {
         case .aiCut:
             runIntelligentCut()
 
-        case .full:
-            activeTool = .full
-            if backgroundRemoved, let editor {
-                editor.setBackgroundRemoved(false)
-                backgroundRemoved = false
-                hasCommittedChange = true
+        case .original:
+            activeTool = .original
+            if let editor, hasCommittedChange {
+                // setInstances([]) restores the whole image for both instance and
+                // manual editors, and is an undoable step.
+                editor.setInstances([])
+                hasCommittedChange = false
             }
 
         case .brush, .erase, .rectangle, .lasso, .crop:
@@ -763,14 +900,19 @@ struct StickerEditorView: View {
         guard let editor, !isRemoving, !isSaving else { return }
         activeTool = .aiCut
 
-        // Already lifted once: restore the stored subject mask instead of
-        // paying for another Vision pass.
-        if editor.hasSubject {
-            if !backgroundRemoved {
-                editor.setBackgroundRemoved(true)
-                backgroundRemoved = true
+        if hasInstances {
+            // Restore the user's chosen selection without another Vision pass.
+            if editor.selectedInstanceIDs != chosenInstances {
+                editor.setInstances(chosenInstances)
                 hasCommittedChange = true
             }
+            return
+        }
+
+        // A mask-only cut (no per-instance data) can be re-applied cheaply.
+        if editor.hasSubject {
+            editor.setBackgroundRemoved(true)
+            hasCommittedChange = true
             return
         }
 
@@ -787,15 +929,31 @@ struct StickerEditorView: View {
                         removalProgress = min(max(value, 0), 1)
                     }
                 }
-                let updated = MaskEditor(base: base, mask: extraction.mask, maxDimension: 1024)
-                updated.brushRadius = radius
-                self.editor = updated
-                self.backgroundRemoved = true
+
+                if extraction.instances.isEmpty {
+                    // No separable subjects: keep the combined cut so the user
+                    // still gets a result, and steer them to the manual tools.
+                    let fallback = MaskEditor(base: base, mask: extraction.mask, maxDimension: 1024)
+                    fallback.brushRadius = radius
+                    self.editor = fallback
+                    self.hasInstances = false
+                    self.chosenInstances = []
+                } else {
+                    let updated = MaskEditor(
+                        base: base,
+                        instances: extraction.instances,
+                        maxDimension: 1024
+                    )
+                    updated.brushRadius = radius
+                    self.editor = updated
+                    self.hasInstances = true
+                    self.chosenInstances = updated.selectedInstanceIDs
+                }
                 self.hasCommittedChange = true
                 self.isRemoving = false
             } catch {
                 self.isRemoving = false
-                self.activeTool = .full
+                self.activeTool = .original
                 self.alertMessage = (error as? LocalizedError)?.errorDescription
                     ?? "Couldn't remove the background."
             }
@@ -845,23 +1003,13 @@ struct StickerEditorView: View {
         .transition(.opacity)
     }
 
-    /// Percentage only for the fractional stages. Compression and saving are
-    /// indeterminate — never a fake 100% while the sticker isn't written yet.
+    /// `StickerCreationStage.label` already carries the exact copy and only puts
+    /// a percentage on the determinate stages; `.compressing` stays indeterminate.
     private var applyProgressText: String {
-        guard let stage = applyStage else {
-            return "Preparing sticker…"
-        }
+        guard let stage = applyStage else { return "Preparing sticker…" }
         switch stage {
-        case .compressing:
-            return "Optimizing WebP…"
-        case .saving:
-            return "Saving…"
-        case .done:
-            return "Finishing…"
-        case .loading:
-            return "Preparing sticker…"
-        case .extracting(let fraction), .cutting(let fraction):
-            return "\(stage.label) \(Int((fraction * 100).rounded()))%"
+        case .loading: return "Preparing sticker…"
+        default: return stage.label
         }
     }
 
@@ -880,12 +1028,11 @@ struct StickerEditorView: View {
         }
         let base = loaded.upNormalized() ?? loaded
 
-        // No automatic cut-out: start on Full with everything kept. Vision only
-        // runs when the user taps Intelligent Cut.
+        // No automatic cut-out: start on Original with everything kept. Vision
+        // only runs when the user taps Intelligent Cut.
         let editor = MaskEditor(base: base, mask: nil, maxDimension: 1024)
         self.editor = editor
-        activeTool = .full
-        backgroundRemoved = false
+        activeTool = .original
     }
 
     private func retry() {
@@ -951,7 +1098,7 @@ struct StickerEditorView: View {
         case rectangle
         case lasso
         case crop
-        case full
+        case original
         case brush
         case erase
 
@@ -963,7 +1110,7 @@ struct StickerEditorView: View {
             case .rectangle: "Rectangle"
             case .lasso: "Lasso"
             case .crop: "Crop"
-            case .full: "Full"
+            case .original: "Original"
             case .brush: "Brush"
             case .erase: "Erase"
             }
@@ -975,7 +1122,7 @@ struct StickerEditorView: View {
             case .rectangle: "rectangle.dashed"
             case .lasso: "lasso"
             case .crop: "crop"
-            case .full: "square.grid.3x3"
+            case .original: "photo"
             case .brush: "paintbrush.pointed"
             case .erase: "eraser"
             }
