@@ -24,6 +24,7 @@ struct AddStickerSheet: View {
     @State private var committingID: UUID?
     @State private var errorMessage: String?
     @State private var editingItem: QueueItem?
+    @State private var previewSticker: StickerItem?
 
     @State private var showingCamera = false
     @State private var capturedImage: UIImage?
@@ -95,12 +96,6 @@ struct AddStickerSheet: View {
         let id = UUID()
         let source: StickerSource
         var sticker: StickerItem?
-
-        /// GIFs convert automatically, and edited items carry their sticker.
-        var needsEdit: Bool {
-            if case .gif = source { return false }
-            return sticker == nil
-        }
     }
 
     var body: some View {
@@ -127,6 +122,9 @@ struct AddStickerSheet: View {
         }
         .sheet(item: $editingItem) { item in
             editor(for: item)
+        }
+        .sheet(item: $previewSticker) { sticker in
+            StickerPreviewSheet(item: sticker)
         }
         .fullScreenCover(isPresented: $showingCamera, onDismiss: processCapturedImage) {
             CameraPicker(
@@ -449,16 +447,17 @@ struct AddStickerSheet: View {
                 openEditor(item)
             } label: {
                 HStack(spacing: 12) {
-                    QueueThumbnail(source: item.source)
+                    // Once edited, the thumbnail shows the finished sticker.
+                    QueueThumbnail(source: item.source, previewData: item.sticker?.previewData)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(typeLabel(for: item.source))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
 
-                        Text(item.needsEdit ? "Needs edit" : "Ready")
+                        Text("Tap to edit")
                             .font(.caption)
-                            .foregroundStyle(item.needsEdit ? Color.secondary : Color.green)
+                            .foregroundStyle(.secondary)
                     }
 
                     Spacer(minLength: 0)
@@ -472,7 +471,21 @@ struct AddStickerSheet: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(typeLabel(for: item.source)), \(item.needsEdit ? "needs edit" : "ready")")
+            .accessibilityLabel("\(typeLabel(for: item.source)). Tap to edit")
+            .accessibilityHint(isEditable(item.source) ? "Opens the editor" : "This item is added as-is")
+
+            if let sticker = item.sticker {
+                Button {
+                    previewSticker = sticker
+                } label: {
+                    Image(systemName: "eye")
+                        .font(.title3)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Preview \(typeLabel(for: item.source).lowercased())")
+            }
 
             Button {
                 remove(item)
@@ -765,11 +778,15 @@ private struct ExistingStickerThumb: View {
     }
 }
 
-/// Small opaque thumbnail for a queued source. Content layer — never glass.
+/// Small opaque thumbnail for a queued source. Shows the edited sticker's still
+/// once the item has been processed. Content layer — never glass.
 private struct QueueThumbnail: View {
     let source: StickerSource
+    /// The edited sticker's still, if the item has already been processed.
+    let previewData: Data?
 
     @State private var image: UIImage?
+    @State private var isEdited = false
 
     private var symbol: String {
         switch source {
@@ -787,7 +804,8 @@ private struct QueueThumbnail: View {
                 if let image {
                     Image(uiImage: image)
                         .resizable()
-                        .scaledToFill()
+                        .aspectRatio(contentMode: isEdited ? .fit : .fill)
+                        .padding(isEdited ? 4 : 0)
                 } else {
                     Image(systemName: symbol)
                         .font(.title3)
@@ -795,8 +813,14 @@ private struct QueueThumbnail: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .task {
-                image = await Self.load(source)
+            .task(id: previewData) {
+                if let previewData, let edited = UIImage(data: previewData) {
+                    isEdited = true
+                    image = edited
+                } else {
+                    isEdited = false
+                    image = await Self.load(source)
+                }
             }
             .accessibilityHidden(true)
     }

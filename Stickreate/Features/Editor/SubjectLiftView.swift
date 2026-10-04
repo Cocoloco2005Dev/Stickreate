@@ -66,50 +66,18 @@ struct SubjectLiftView: View {
 
     // MARK: - Bottom control
 
-    @ViewBuilder
+    /// One fixed layout in every state: the lifted-subject slot, the drag target,
+    /// and both buttons are always present (just disabled/hidden-content until a
+    /// subject is lifted), so nothing pops or re-lays out mid-flow.
     private var bottomBar: some View {
-        Group {
-            if let lifted = model.liftedImage {
-                useRow(lifted)
-            } else {
-                liftRow
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 4)
-        .background(.regularMaterial, ignoresSafeAreaEdges: .bottom)
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    /// Before a subject is lifted: explain and offer a manual lift.
-    private var liftRow: some View {
-        VStack(spacing: 10) {
-            Text("Press and hold a subject to lift it")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            Button {
-                Task { await model.liftFromInteraction() }
-            } label: {
-                Text("Lift Subject")
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
-            .buttonStyle(.glassProminent)
-            .disabled(model.subjectCount == 0 || model.isLifting)
-            .accessibilityHint("Lifts the highlighted subject")
-        }
-    }
-
-    /// After a lift: drag the thumbnail into the target, or confirm with a tap.
-    private func useRow(_ lifted: UIImage) -> some View {
         VStack(spacing: 12) {
-            Text("Drag the subject into the box to use it")
+            Text("Press and hold a subject, then drag it into the box")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
             HStack(spacing: 16) {
-                liftedThumbnail(lifted)
+                liftedSlot
 
                 Image(systemName: "arrow.right")
                     .font(.title3.weight(.semibold))
@@ -122,13 +90,45 @@ struct SubjectLiftView: View {
                 Button("Lift Different") { model.liftedImage = nil }
                     .buttonStyle(.glass)
                     .frame(minHeight: 44)
+                    .disabled(model.liftedImage == nil)
                     .accessibilityHint("Clears this subject so you can lift another")
 
                 Button("Use Subject") { confirmLifted() }
                     .buttonStyle(.glassProminent)
                     .frame(maxWidth: .infinity, minHeight: 44)
+                    .disabled(model.liftedImage == nil)
                     .accessibilityHint("Uses this subject in the editor")
             }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+        .background(.regularMaterial, ignoresSafeAreaEdges: .bottom)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    /// Always-present slot for the lifted subject, so the row never re-lays out.
+    @ViewBuilder
+    private var liftedSlot: some View {
+        if let lifted = model.liftedImage {
+            liftedThumbnail(lifted)
+        } else {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemFill))
+                .frame(width: 84, height: 84)
+                .overlay {
+                    Image(systemName: "person.crop.rectangle")
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(
+                            Color.secondary.opacity(0.4),
+                            style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
+                        )
+                )
+                .accessibilityHidden(true)
         }
     }
 
@@ -266,7 +266,6 @@ struct SubjectLiftView: View {
 final class SubjectLiftModel {
     var subjectCount = 0
     var isAnalyzing = true
-    var isLifting = false
     var errorMessage: String?
     /// The background-removed subject awaiting confirmation, if any.
     var liftedImage: UIImage?
@@ -277,29 +276,11 @@ final class SubjectLiftModel {
     /// Guards against overlapping cut-out generations.
     @ObservationIgnored private var isGenerating = false
 
-    /// Materializes the cut-out for the highlighted subject (or all subjects
-    /// when none is highlighted). Used by the manual button.
-    func liftFromInteraction() async {
-        guard let interaction else { return }
-        let highlighted = interaction.highlightedSubjects
-        let all = await interaction.subjects
-        let chosen = highlighted.isEmpty ? all : highlighted
-        guard !chosen.isEmpty else {
-            errorMessage = "Press and hold a subject first."
-            return
-        }
-        await generate(for: chosen)
-    }
-
     /// Renders the background-removed image for `subjects` and stores it.
     func generate(for subjects: Set<ImageAnalysisInteraction.Subject>) async {
         guard let interaction, !isGenerating, !subjects.isEmpty else { return }
         isGenerating = true
-        isLifting = true
-        defer {
-            isGenerating = false
-            isLifting = false
-        }
+        defer { isGenerating = false }
         do {
             liftedImage = try await interaction.image(for: subjects)
         } catch {

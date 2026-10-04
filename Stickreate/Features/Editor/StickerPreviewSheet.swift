@@ -88,10 +88,9 @@ struct StickerPreviewSheet: View {
             }
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(alignment: .bottomTrailing) {
+            .overlay {
                 if item.kind == .animated {
                     playPauseButton
-                        .padding(12)
                 }
             }
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
@@ -100,18 +99,19 @@ struct StickerPreviewSheet: View {
         }
     }
 
-    /// Icon-only play/pause for the animated preview. Control layer → glass.
+    /// Large, centered play/pause like a video player. Control layer → glass.
     private var playPauseButton: some View {
         Button {
             isPlaying.toggle()
         } label: {
             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                .font(.caption.weight(.bold))
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+                .font(.system(size: 30, weight: .bold))
+                .frame(width: 72, height: 72)
+                .contentShape(Circle())
         }
         .buttonStyle(.glass)
         .accessibilityLabel(isPlaying ? "Pause" : "Play")
+        .accessibilityHint("Stops or restarts the animated preview")
     }
 
     private var details: some View {
@@ -261,8 +261,7 @@ private struct AnimatedStickerView: UIViewRepresentable {
         view.resetFrameIndexWhenStopped = true
         context.coordinator.data = data
         view.image = SDImageWebPCoder.shared.decodedImage(with: data, options: nil) ?? fallback
-        view.wantsPlayback = isPlaying
-        view.startAnimating()
+        context.coordinator.apply(isPlaying: isPlaying, to: view)
         return view
     }
 
@@ -271,21 +270,30 @@ private struct AnimatedStickerView: UIViewRepresentable {
             context.coordinator.data = data
             uiView.image = SDImageWebPCoder.shared.decodedImage(with: data, options: nil) ?? fallback
         }
-        (uiView as? PlaybackAnimatedImageView)?.wantsPlayback = isPlaying
-        if isPlaying {
-            uiView.startAnimating()
-        } else {
-            uiView.stopAnimating()
-        }
+        context.coordinator.apply(isPlaying: isPlaying, to: uiView)
     }
 
     final class Coordinator {
         var data: Data?
+
+        /// One place that maps the SwiftUI toggle onto the animated view, so
+        /// `makeUIView` and `updateUIView` can't disagree — previously
+        /// `makeUIView` always started the animation, which is why pausing
+        /// appeared to do nothing.
+        func apply(isPlaying: Bool, to view: SDAnimatedImageView) {
+            (view as? PlaybackAnimatedImageView)?.wantsPlayback = isPlaying
+            view.playbackRate = isPlaying ? 1 : 0
+            if isPlaying {
+                view.startAnimating()
+            } else {
+                view.stopAnimating()
+            }
+        }
     }
 }
 
-/// Starts its display link only when it lands in a window and playback is
-/// wanted, so the animation reliably begins on screen and honors pause.
+/// Starts/stops its display link with the desired playback state, so the
+/// animation reliably begins on screen and honors pause.
 private final class PlaybackAnimatedImageView: SDAnimatedImageView {
     var wantsPlayback = true
 
@@ -294,6 +302,8 @@ private final class PlaybackAnimatedImageView: SDAnimatedImageView {
         guard window != nil else { return }
         if wantsPlayback {
             startAnimating()
+        } else {
+            stopAnimating()
         }
     }
 }

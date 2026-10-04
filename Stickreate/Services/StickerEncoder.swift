@@ -21,10 +21,10 @@ enum StickerEncoder {
     /// aim just under it so we can keep as many frames as possible.
     private static let animatedByteBudget = 480 * 1024
 
-    /// Quality ladder (libwebp 0...100), walked top-down before ANY frames are
-    /// dropped. The native animated encoder exploits inter-frame redundancy, so
-    /// lowering quality is cheaper (and keeps more motion) than dropping frames.
-    private static let animatedQualities: [Float] = [90, 80, 70, 60, 50, 40, 30, 25]
+    /// Short quality ladder (libwebp 0...100). The full frame set is tried at
+    /// ~80 first; only if it exceeds the budget do we try 60, then 40. No long
+    /// walk — keep the frames, drop quality.
+    private static let animatedQualities: [Float] = [80, 60, 40]
 
     /// libwebp animated method. Method 4 is the fast default; the native encoder
     /// already exploits inter-frame redundancy, so an expensive method is not
@@ -111,8 +111,8 @@ enum StickerEncoder {
                     #if DEBUG
                     let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
                     print(String(
-                        format: "[StickerEncoder] animated %d frames q=%d %.0fms -> %d bytes",
-                        images.count, Int(quality), ms, data.count
+                        format: "[StickerEncoder] animated total %.0fms: %d frames q=%d -> %d bytes",
+                        ms, images.count, Int(quality), data.count
                     ))
                     #endif
                     onProgress?(1.0)

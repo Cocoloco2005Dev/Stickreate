@@ -3,6 +3,8 @@ import Foundation
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 /// Orchestrates: picked item → frames/image → background removal → encode → StickerItem.
 enum StickerFactory {
@@ -22,6 +24,9 @@ enum StickerFactory {
             }
         }
     }
+
+    /// Shared Core Image context for applying the single video mask to frames.
+    private static let ciContext = CIContext()
 
     /// Turns a picked photo, video, or GIF into a ready-to-use sticker.
     ///
@@ -143,12 +148,12 @@ enum StickerFactory {
     ///
     /// `fps <= 0` lets the extractor choose a sane automatic rate. `cropRect`
     /// is a normalized top-left rect applied to every frame before encoding
-    /// (`nil` = full frame). Background removal is opt-in (off by default):
-    /// per-frame Vision is slow and memory-hungry, and video stickers rarely
-    /// need it.
+    /// (`nil` = full frame). Background removal is opt-in (off by default): one
+    /// Vision pass on the middle frame is cheap, and video stickers rarely need
+    /// it.
     ///
     /// `onProgress` (0...1, main queue): frame extraction when
-    /// `removeBackground == false`, otherwise per-frame Vision across the clip.
+    /// `removeBackground == false`, otherwise the Vision pass + composite.
     /// `onStage` reports real phases and `nil`-free completion (`.done` last).
     static func makeAnimatedSticker(
         from draft: VideoDraft,
@@ -234,7 +239,7 @@ enum StickerFactory {
     ) async throws -> StickerItem {
         guard !frames.isEmpty else { throw Failure.empty }
 
-        // Only run Vision when explicitly asked. If the first frame can't be
+        // Only run Vision when explicitly asked. If the middle frame can't be
         // cut, keep the original frames for all.
         let usable: [Frame]
         if removeBackground {
@@ -282,23 +287,20 @@ enum StickerFactory {
         return item
     }
 
-    /// Watchdog backstop for the per-frame cut-out. Scales with the frame count
-    /// (per-frame Vision is the heavy stage) so long clips get enough time, but
-    /// is capped so a true hang can never freeze the UI. Progress is reported
-    /// per frame, so the UI keeps moving while this runs.
-    private static func cutOutTimeout(for frameCount: Int) -> TimeInterval {
-        min(30, max(10, Double(frameCount) * 0.25))
-    }
+    /// Watchdog backstop for the single-mask cut-out. Generous enough for one
+    /// Vision pass plus a sequential composite of every frame, but capped so a
+    /// true hang can never freeze the UI.
+    private static let cutOutTimeout: TimeInterval = 15
 
-    /// Background-removes every frame independently so the subject follows the
-    /// motion, with bounded concurrency (max 3 in flight) and order preserved.
-    /// Each frame that fails falls back to that frame's original. A watchdog
-    /// aborts the whole step to the ORIGINAL frames if it runs over the timeout.
+    /// Applies ONE Vision subject mask (computed from the middle frame) to every
+    /// frame, so the cutout is stable and fast. Never throws and never surfaces
+    /// an error: if Vision fails, finds no subject, or times out it returns nil
+    /// and the caller keeps the original frames.
     ///
-    /// `onProgress` maps completed frames into `0...1`.
+    /// `onProgress` maps the Vision pass and the per-frame composite into `0...1`.
     private static func cutOut(_ frames: [Frame], onProgress: ((Double) -> Void)? = nil) async -> [Frame]? {
         guard !frames.isEmpty else { return nil }
-        let timeout = cutOutTimeout(for: frames.count)
+        let timeout = cutOutTimeout
         return await withCheckedContinuation { (continuation: CheckedContinuation<[Frame]?, Never>) in
             let gate = ResumeOnce(continuation)
             // Ignore progress once the race is decided, so a late/timed-out work
@@ -324,44 +326,59 @@ enum StickerFactory {
         }
     }
 
-    /// Runs `BackgroundRemover.removeBackground` on every frame with bounded
-    /// concurrency (max 3 in flight) and order preserved. A frame that fails
-    /// keeps that frame's original image. Progress is reported as frames finish.
+    /// Computes ONE subject mask from the middle frame and applies it to every
+    /// frame. Returns nil (no cut) if Vision fails, finds no subject, or is
+    /// cancelled — the caller keeps the original frames.
     private static func computeCutout(_ frames: [Frame], onProgress: ((Double) -> Void)?) async -> [Frame]? {
         guard !frames.isEmpty else { return nil }
+        let representative = frames[frames.count / 2]
+
         onProgress?(0)
+        guard let extraction = try? await BackgroundRemover.extractSubject(
+            from: representative.image,
+            progress: { onProgress?($0) }
+        ) else {
+            return nil
+        }
+        guard !Task.isCancelled, !extraction.instances.isEmpty else { return nil }
+
+        let mask = extraction.mask
+        var result: [Frame] = []
+        result.reserveCapacity(frames.count)
         let total = Double(frames.count)
-        var cut: [UIImage?] = Array(repeating: nil, count: frames.count)
-        var completed = 0
-
-        await withTaskGroup(of: (Int, UIImage?).self) { group in
-            var nextIndex = 0
-            var inFlight = 0
-            let maxInFlight = 3
-            while nextIndex < frames.count || inFlight > 0 {
-                while nextIndex < frames.count, inFlight < maxInFlight, !Task.isCancelled {
-                    let index = nextIndex
-                    let image = frames[index].image
-                    group.addTask {
-                        let result = try? await BackgroundRemover.removeBackground(from: image)
-                        return (index, result)
-                    }
-                    nextIndex += 1
-                    inFlight += 1
-                }
-                if let (index, image) = await group.next() {
-                    cut[index] = image
-                    inFlight -= 1
-                    completed += 1
-                    onProgress?(Double(completed) / total)
-                }
-            }
+        for (index, frame) in frames.enumerated() {
+            if Task.isCancelled { return nil }
+            let image = composite(frame.image, through: mask) ?? frame.image
+            result.append(Frame(image: image, duration: frame.duration))
+            onProgress?(Double(index + 1) / total)
         }
+        return result
+    }
 
-        // Each frame falls back to its own original on failure.
-        return (0..<frames.count).map { index in
-            Frame(image: cut[index] ?? frames[index].image, duration: frames[index].duration)
+    /// Composites `image` through a single-channel grayscale `mask` (white =
+    /// keep) onto a transparent background. The mask is scaled to the image
+    /// extent if their pixel sizes differ.
+    private static func composite(_ image: UIImage, through mask: CGImage) -> UIImage? {
+        guard let base = CIImage(image: image) else { return nil }
+        var maskImage = CIImage(cgImage: mask)
+        if maskImage.extent.width > 0, maskImage.extent.height > 0,
+           maskImage.extent.size != base.extent.size {
+            maskImage = maskImage.transformed(by: CGAffineTransform(
+                scaleX: base.extent.width / maskImage.extent.width,
+                y: base.extent.height / maskImage.extent.height
+            ))
         }
+        let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0))
+            .cropped(to: base.extent)
+        let filter = CIFilter.blendWithMask()
+        filter.inputImage = base
+        filter.backgroundImage = clear
+        filter.maskImage = maskImage
+        guard let output = filter.outputImage,
+              let cgImage = ciContext.createCGImage(output, from: base.extent) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage)
     }
 
     /// Resumes a continuation at most once, so the work task and the watchdog can
