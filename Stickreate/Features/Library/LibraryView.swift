@@ -558,7 +558,3 @@ struct LibraryView: View {
         .frame(width: 430, height: 932)
 }
 
-#Preview("Reduce Transparency") {
-    LibraryView()
-        .environment(\.accessibilityReduceTransparency, true)
-}

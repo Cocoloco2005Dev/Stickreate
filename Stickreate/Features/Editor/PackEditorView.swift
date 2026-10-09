@@ -502,14 +502,14 @@ private func editorPreviewStore() -> (PackStore, UUID) {
 
 #Preview("Light") {
     let (store, id) = editorPreviewStore()
-    return NavigationStack {
+    NavigationStack {
         PackEditorView(store: store, packID: id)
     }
 }
 
 #Preview("Dark") {
     let (store, id) = editorPreviewStore()
-    return NavigationStack {
+    NavigationStack {
         PackEditorView(store: store, packID: id)
     }
     .preferredColorScheme(.dark)
@@ -517,7 +517,7 @@ private func editorPreviewStore() -> (PackStore, UUID) {
 
 #Preview("Largest Dynamic Type") {
     let (store, id) = editorPreviewStore()
-    return NavigationStack {
+    NavigationStack {
         PackEditorView(store: store, packID: id)
     }
     .dynamicTypeSize(.accessibility5)
@@ -525,7 +525,7 @@ private func editorPreviewStore() -> (PackStore, UUID) {
 
 #Preview("Small iPhone (SE)") {
     let (store, id) = editorPreviewStore()
-    return NavigationStack {
+    NavigationStack {
         PackEditorView(store: store, packID: id)
     }
     .frame(width: 375, height: 667)
@@ -533,16 +533,9 @@ private func editorPreviewStore() -> (PackStore, UUID) {
 
 #Preview("Large iPhone (Pro Max)") {
     let (store, id) = editorPreviewStore()
-    return NavigationStack {
+    NavigationStack {
         PackEditorView(store: store, packID: id)
     }
     .frame(width: 430, height: 932)
 }
 
-#Preview("Reduce Transparency") {
-    let (store, id) = editorPreviewStore()
-    return NavigationStack {
-        PackEditorView(store: store, packID: id)
-    }
-    .environment(\.accessibilityReduceTransparency, true)
-}

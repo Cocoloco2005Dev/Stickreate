@@ -138,7 +138,3 @@ struct RootView: View {
         .frame(width: 430, height: 932)
 }
 
-#Preview("Reduce Transparency") {
-    RootView()
-        .environment(\.accessibilityReduceTransparency, true)
-}
