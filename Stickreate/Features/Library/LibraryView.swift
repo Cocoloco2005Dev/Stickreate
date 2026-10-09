@@ -382,11 +382,16 @@ struct LibraryView: View {
     /// Writes a `.stickreatepack` and opens the share sheet. This is the data
     /// backup/transfer path; the WhatsApp import is the primary action.
     private func exportFile(_ pack: StickerPack) {
-        do {
-            let url = try PackArchive.writeTemporaryFile(pack)
-            shareItem = ShareItem(url: url)
-        } catch {
-            presentError(error.localizedDescription, as: .general)
+        Task { @MainActor in
+            do {
+                // ZIP build + disk write off the main actor.
+                let url = try await Task.detached(priority: .userInitiated) {
+                    try PackArchive.writeTemporaryFile(pack)
+                }.value
+                shareItem = ShareItem(url: url)
+            } catch {
+                presentError(error.localizedDescription, as: .general)
+            }
         }
     }
 
@@ -490,15 +495,21 @@ struct LibraryView: View {
 
     private func importPackFile(_ url: URL) {
         let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-        do {
-            let data = try Data(contentsOf: url)
-            let pack = try PackArchive.importPack(from: data)
-            store.importPack(pack)
-            showImportedBanner()
-        } catch {
-            presentError(error.localizedDescription, as: .importFailed)
+        Task { @MainActor in
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                // Whole-archive read + unzip off the main actor; only the UI
+                // state update re-enters it.
+                let pack = try await Task.detached(priority: .userInitiated) {
+                    let data = try Data(contentsOf: url)
+                    return try PackArchive.importPack(from: data)
+                }.value
+                store.importPack(pack)
+                settings.refreshStorageSummary()
+                showImportedBanner()
+            } catch {
+                presentError(error.localizedDescription, as: .importFailed)
+            }
         }
     }
 

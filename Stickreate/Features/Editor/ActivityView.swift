@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 
 /// Presents the system share sheet for a file URL (used to share a pack file).
+///
+/// System UI with no custom chrome, so it carries no design-system tokens.
 struct ActivityView: UIViewControllerRepresentable {
     let url: URL
     let onComplete: () -> Void

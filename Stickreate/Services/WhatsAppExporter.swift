@@ -128,11 +128,10 @@ enum WhatsAppExporter {
 
     /// Opens WhatsApp's sticker importer once, after `delay`, on the main actor.
     private static func openWhatsApp(after delay: TimeInterval) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            MainActor.assumeIsolated {
-                guard let url = URL(string: "whatsapp://stickerPack") else { return }
-                UIApplication.shared.open(url, options: [:], completionHandler: nil)
-            }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let url = URL(string: "whatsapp://stickerPack") else { return }
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
         }
     }
 

@@ -35,3 +35,19 @@ Branch flow: `overhaul/audit` (Phases 1–2) → `overhaul/p0-fixes` (Phase 4a) 
 
 - RootView now has two `.alert` modifiers on the same view (persistence + import). Needs a simulator check that both present correctly; if not, merge into one alert.
 - `PackStorePersistenceTests.testRemovePackDeletesStickerSources` writes a temp file under the sandbox `Documents/Sources` (cleaned up with `defer`).
+
+## Phase 3 (chunk 1) + Phase 4b (part 1) — design system + library/pack reskin + P1 fixes
+
+- **Branch**: `overhaul/p0-fixes`. Commits `203e1e2`…(see git log). CI **green** (run `37888536590`).
+- **Design chunk 1** (`des-1`): new `Stickreate/DesignSystem/` (tokens, typography, color roles, haptics, shared state views); reskinned `RootView`, `Library`, `PackCard`, `ImportMediaSheet`, `PackEditorView`, `StickerCell`, `ExportSheet`, `FolderPickerSheet`, `EmojiPickerSheet`; accessible accent `#E0264F`; previews. Spec: `docs/overhaul/02-design-spec.md`; `docs/design.md` updated.
+- **Phase 4b (part 1)**:
+  - `FrameExtractor`: GIF downsampling now sums the skipped frames' delays → total duration preserved (`downsampledDelays`, unit-tested).
+  - `StickerEncoder`: extended quality (q25) + frame-drop ladder so motion-heavy clips encode instead of failing.
+  - `PackArchive`/`PackStore`: import validation (≤30, no mixed kinds, per-entry 1 MB + total 20 MB caps), launch-time orphan-source reconcile, removed `archive!` force unwraps.
+- **CI fixes**: removed uncompilable `#Preview` bodies (`return` inside ViewBuilder; `accessibilityReduceTransparency` is a get-only environment key — cannot be injected).
+- **Open / deferred**:
+  - **P0-2 full** single-resident frame fix needs an ownership refactor (`StickerFactory` → `StickerEncoder` `inout`/`consume`) + device measurement. Not done (no compiler available to validate).
+  - **P1-2** `Original` semantics (restore pre-lift base) → Phase 3 chunk 2/3.
+  - Swift 6 mode / warnings-as-errors → Phase 5.
+  - Localization (EN + es-AR) → after design freezes strings.
+  - **P0-3** app icon still copyrighted art (user decision: keep for now).

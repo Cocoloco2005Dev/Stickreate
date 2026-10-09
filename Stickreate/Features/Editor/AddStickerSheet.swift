@@ -22,7 +22,8 @@ struct AddStickerSheet: View {
     @State private var isProcessing = false
     @State private var currentStage: StickerCreationStage?
     @State private var committingID: UUID?
-    @State private var errorMessage: String?
+    @State private var notice: Notice?
+    @State private var successPulse = 0
     @State private var editingItem: QueueItem?
     @State private var previewSticker: StickerItem?
 
@@ -98,6 +99,33 @@ struct AddStickerSheet: View {
         var sticker: StickerItem?
     }
 
+    /// One channel for non-blocking messages. Errors and "some items were
+    /// skipped" read differently, so they get distinct titles.
+    private enum Notice: Identifiable, Equatable {
+        case error(String)
+        case skipped(String)
+
+        var id: String {
+            switch self {
+            case .error(let message): "error-\(message)"
+            case .skipped(let message): "skipped-\(message)"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .error: "Something went wrong"
+            case .skipped: "Only one kind per pack"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .error(let message), .skipped(let message): message
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             content
@@ -107,7 +135,6 @@ struct AddStickerSheet: View {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
                             .disabled(isProcessing)
-                            .tint(Color.accentColor)
                     }
                     // No Add action until there is something in the queue.
                     if !queue.isEmpty {
@@ -115,6 +142,7 @@ struct AddStickerSheet: View {
                             Button("Add \(queue.count)") {
                                 Task { await commit() }
                             }
+                            .buttonStyle(.glassProminent)
                             .disabled(isProcessing || isImporting || remaining == 0)
                         }
                     }
@@ -149,16 +177,19 @@ struct AddStickerSheet: View {
             handleFileImport(result)
         }
         .alert(
-            "Something went wrong",
+            notice?.title ?? "",
             isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
+                get: { notice != nil },
+                set: { if !$0 { notice = nil } }
             )
         ) {
-            Button("OK", role: .cancel) { errorMessage = nil }
+            Button("OK", role: .cancel) { notice = nil }
         } message: {
-            Text(errorMessage ?? "")
+            Text(notice?.message ?? "")
         }
+        .haptic(.success, trigger: successPulse)
+        .haptic(.error, trigger: notice)
+        .announceOnChange(of: currentStage.announcementPhase) { $0 }
     }
 
     // MARK: - Content
@@ -166,15 +197,16 @@ struct AddStickerSheet: View {
     @ViewBuilder
     private var content: some View {
         if remaining == 0 {
-            ContentUnavailableView {
-                Label("Pack Is Full", systemImage: "checkmark.circle")
-            } description: {
-                Text("A pack can hold at most \(Limits.maxStickers) stickers.")
+            EmptyState(
+                symbol: "checkmark.circle",
+                title: "Pack Is Full",
+                message: "A pack can hold at most \(Limits.maxStickers) stickers."
+            ) {
+                Button("Done") { dismiss() }
+                    .buttonStyle(.glassProminent)
             }
         } else if isImporting {
-            ProgressView("Importing…")
-                .controlSize(.large)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            LoadingState(title: "Importing…")
         } else if queue.isEmpty && !isProcessing {
             pickerState
         } else {
@@ -184,29 +216,29 @@ struct AddStickerSheet: View {
 
     private var pickerState: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: DS.Space.section) {
                 packSummary
                 actionsRow
                 existingStickersSection
                 howToSection
             }
-            .padding(20)
+            .padding(DS.Space.xl)
         }
     }
 
     // MARK: - Picker helpers
 
     private var packSummary: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Space.md) {
             packCover
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: DS.Space.xxs) {
                 Text(pack?.name ?? "This pack")
-                    .font(.headline)
+                    .font(DS.TextRole.cardTitle)
                     .lineLimit(1)
 
                 Text("\(pack?.stickers.count ?? 0) of \(Limits.maxStickers) · \(packKindLabel)")
-                    .font(.subheadline)
+                    .font(DS.TextRole.supporting)
                     .foregroundStyle(.secondary)
             }
 
@@ -215,15 +247,15 @@ struct AddStickerSheet: View {
     }
 
     private var packCover: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        RoundedRectangle(cornerRadius: DS.Radius.thumb, style: .continuous)
+            .fill(DS.ColorRole.contentSurface)
             .frame(width: 56, height: 56)
             .overlay {
                 if let image = packCoverImage {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
-                        .padding(6)
+                        .padding(DS.Space.xs)
                 } else {
                     Image(systemName: "square.grid.2x2")
                         .font(.title3)
@@ -244,7 +276,7 @@ struct AddStickerSheet: View {
     }
 
     private var actionsRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Space.md) {
             PhotosPicker(
                 selection: $pickerSelection,
                 maxSelectionCount: remaining,
@@ -276,11 +308,11 @@ struct AddStickerSheet: View {
     }
 
     private func actionTile(_ title: String, systemImage: String) -> some View {
-        VStack(spacing: 6) {
+        VStack(spacing: DS.Space.sm) {
             Image(systemName: systemImage)
                 .font(.title2)
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .font(DS.TextRole.supporting.weight(.semibold))
         }
         .frame(maxWidth: .infinity)
         .frame(height: 76)
@@ -291,27 +323,27 @@ struct AddStickerSheet: View {
     private var existingStickersSection: some View {
         let stickers = pack?.stickers ?? []
         if !stickers.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: DS.Space.sm) {
                 Text("Already in this pack")
-                    .font(.subheadline.weight(.semibold))
+                    .font(DS.TextRole.supporting.weight(.semibold))
                     .foregroundStyle(.secondary)
 
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: DS.Space.sm) {
                         ForEach(stickers.prefix(12)) { item in
                             ExistingStickerThumb(item: item)
                         }
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, DS.Space.xxs)
                 }
             }
         }
     }
 
     private var howToSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
             Text("How it works")
-                .font(.subheadline.weight(.semibold))
+                .font(DS.TextRole.supporting.weight(.semibold))
                 .foregroundStyle(.secondary)
 
             howToStep(1, howToPickText)
@@ -321,15 +353,16 @@ struct AddStickerSheet: View {
     }
 
     private func howToStep(_ number: Int, _ title: String) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DS.Space.sm) {
             Text("\(number)")
-                .font(.caption.weight(.bold))
+                .font(DS.TextRole.badge)
                 .foregroundStyle(.white)
                 .frame(width: 20, height: 20)
-                .background(Color.accentColor, in: Circle())
+                .background(DS.ColorRole.accent, in: Circle())
+                .accessibilityHidden(true)
 
             Text(title)
-                .font(.subheadline)
+                .font(DS.TextRole.supporting)
 
             Spacer(minLength: 0)
         }
@@ -369,31 +402,31 @@ struct AddStickerSheet: View {
 
             Spacer(minLength: 0)
         }
-        .padding(12)
+        .padding(DS.Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            Color(uiColor: .secondarySystemBackground),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            DS.ColorRole.contentSurface,
+            in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
         )
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.bottom, DS.Space.sm)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(currentStage?.label ?? "Adding")
     }
 
     private var queueHeader: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            VStack(alignment: .leading, spacing: DS.Space.xxs) {
                 Text("\(queue.count) \(queue.count == 1 ? "item" : "items") to add")
-                    .font(.subheadline.weight(.semibold))
+                    .font(DS.TextRole.supporting.weight(.semibold))
 
                 Text("Tap an item to open its editor. Anything you leave unedited is added with defaults.")
-                    .font(.caption)
+                    .font(DS.TextRole.caption)
                     .foregroundStyle(.secondary)
             }
 
             if !isProcessing {
-                HStack(spacing: 10) {
+                HStack(spacing: DS.Space.md) {
                     if available > 0 {
                         PhotosPicker(
                             selection: $pickerSelection,
@@ -422,9 +455,9 @@ struct AddStickerSheet: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.top, DS.Space.md)
+        .padding(.bottom, DS.Space.sm)
     }
 
     private var cameraIconButton: some View {
@@ -432,7 +465,7 @@ struct AddStickerSheet: View {
             requestCamera()
         } label: {
             Image(systemName: "camera")
-                .frame(width: 44, height: 44)
+                .frame(width: DS.minTapTarget, height: DS.minTapTarget)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.glass)
@@ -450,13 +483,13 @@ struct AddStickerSheet: View {
                     // Once edited, the thumbnail shows the finished sticker.
                     QueueThumbnail(source: item.source, previewData: item.sticker?.previewData)
 
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: DS.Space.xxs) {
                         Text(typeLabel(for: item.source))
-                            .font(.subheadline.weight(.semibold))
+                            .font(DS.TextRole.supporting.weight(.semibold))
                             .foregroundStyle(.primary)
 
                         Text("Tap to edit")
-                            .font(.caption)
+                            .font(DS.TextRole.caption)
                             .foregroundStyle(.secondary)
                     }
 
@@ -562,7 +595,7 @@ struct AddStickerSheet: View {
         case .success(let urls):
             Task { await importFiles(urls) }
         case .failure(let error):
-            errorMessage = error.localizedDescription
+            presentError(error.localizedDescription)
         }
     }
 
@@ -572,19 +605,21 @@ struct AddStickerSheet: View {
         isImporting = true
         defer { isImporting = false }
 
+        var skipped = 0
         for url in urls {
             guard queue.count < remaining else { break }
             do {
                 let source = try await StickerSourceStore.importFile(at: url)
-                guard isCompatible(stickerKind(for: source)) else {
-                    errorMessage = incompatibleMessage
+                guard kindMatchesTarget(stickerKind(for: source)) else {
+                    skipped += 1
                     continue
                 }
                 queue.append(QueueItem(source: source))
             } catch {
-                errorMessage = error.localizedDescription
+                presentError(error.localizedDescription)
             }
         }
+        reportSkipped(skipped)
     }
 
     @MainActor
@@ -592,17 +627,54 @@ struct AddStickerSheet: View {
         isImporting = true
         defer { isImporting = false }
 
+        var skipped = 0
         for item in items {
             guard queue.count < remaining else { break }
             do {
                 let source = try await StickerSourceStore.importPicked(item)
+                guard kindMatchesTarget(stickerKind(for: source)) else {
+                    skipped += 1
+                    continue
+                }
                 queue.append(QueueItem(source: source))
             } catch {
-                errorMessage = error.localizedDescription
+                presentError(error.localizedDescription)
             }
         }
 
         pickerSelection = []
+        reportSkipped(skipped)
+    }
+
+    /// The kind a multi-selection should keep: the pack's kind if it already has
+    /// one, else the first queued item's kind (the first sticker fixes the pack).
+    private var effectiveKind: StickerKind? {
+        packKind ?? queue.first.map { stickerKind(for: $0.source) }
+    }
+
+    /// True when `kind` can join the current selection. The first item is always
+    /// accepted and fixes the target kind for the rest of the batch.
+    private func kindMatchesTarget(_ kind: StickerKind) -> Bool {
+        guard let target = effectiveKind else { return true }
+        return target == kind
+    }
+
+    private func presentError(_ message: String) {
+        notice = .error(message)
+    }
+
+    /// Clear, single message when a mixed multi-selection was trimmed to one kind.
+    private func reportSkipped(_ count: Int) {
+        guard count > 0 else { return }
+        let noun = count == 1 ? "item" : "items"
+        switch effectiveKind {
+        case .static:
+            notice = .skipped("Added the photos. Skipped \(count) \(noun) that weren't photos — a pack holds one kind.")
+        case .animated:
+            notice = .skipped("Added the videos. Skipped \(count) \(noun) that weren't videos — a pack holds one kind.")
+        case nil:
+            notice = .skipped("Skipped \(count) \(noun) — a pack holds one kind.")
+        }
     }
 
     // MARK: - Commit
@@ -612,7 +684,7 @@ struct AddStickerSheet: View {
         guard !queue.isEmpty else { return }
 
         if queue.count > remaining {
-            errorMessage = StickerPack.ValidationError.tooMany(Limits.maxStickers).localizedDescription
+            presentError(StickerPack.ValidationError.tooMany(Limits.maxStickers).localizedDescription)
             return
         }
 
@@ -631,17 +703,18 @@ struct AddStickerSheet: View {
                 currentStage = .loading
                 let sticker = try await resolvedSticker(for: item)
                 guard isCompatible(sticker.kind) else {
-                    errorMessage = incompatibleMessage
+                    presentError(incompatibleMessage)
                     return
                 }
                 try store.add(sticker, to: packID)
                 queue.removeAll { $0.id == item.id }
             } catch {
-                errorMessage = error.localizedDescription
+                presentError(error.localizedDescription)
                 return
             }
         }
 
+        successPulse += 1
         dismiss()
     }
 
@@ -683,7 +756,10 @@ struct AddStickerSheet: View {
             )
 
         case .gif:
-            return try await StickerFactory.makeAnimatedSticker(fromGIFSource: item.source)
+            return try await StickerFactory.makeAnimatedSticker(
+                fromGIFSource: item.source,
+                onStage: stageHandler(for: item)
+            )
         }
     }
 
@@ -711,12 +787,12 @@ struct AddStickerSheet: View {
                     if granted {
                         showingCamera = true
                     } else {
-                        errorMessage = "Camera access is off. Turn it on in Settings to take a photo."
+                        presentError("Camera access is off. Turn it on in Settings to take a photo.")
                     }
                 }
             }
         default:
-            errorMessage = "Camera access is off. Turn it on in Settings to take a photo."
+            presentError("Camera access is off. Turn it on in Settings to take a photo.")
         }
     }
 
@@ -733,12 +809,12 @@ struct AddStickerSheet: View {
                 let upright = image.upNormalized() ?? image
                 let source = try StickerSourceStore.saveImage(upright, id: UUID())
                 guard isCompatible(.static) else {
-                    errorMessage = incompatibleMessage
+                    presentError(incompatibleMessage)
                     return
                 }
                 queue.append(QueueItem(source: source))
             } catch {
-                errorMessage = error.localizedDescription
+                presentError(error.localizedDescription)
             }
         }
     }
@@ -749,29 +825,29 @@ private struct ExistingStickerThumb: View {
     let item: StickerItem
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        RoundedRectangle(cornerRadius: DS.Radius.badge, style: .continuous)
+            .fill(DS.ColorRole.contentSurface)
             .frame(width: 56, height: 56)
             .overlay {
                 if let image = UIImage(data: item.previewData) {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
-                        .padding(4)
+                        .padding(DS.Space.xs)
                 } else {
                     Image(systemName: "photo")
-                        .font(.caption)
+                        .font(DS.TextRole.caption)
                         .foregroundStyle(.secondary)
                 }
             }
             .overlay(alignment: .bottomTrailing) {
                 if item.kind == .animated {
                     Image(systemName: "play.fill")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(DS.TextRole.badge)
                         .foregroundStyle(.white)
                         .padding(3)
-                        .background(.black.opacity(0.45), in: Circle())
-                        .padding(4)
+                        .background(DS.ColorRole.mediaScrim, in: Circle())
+                        .padding(DS.Space.xs)
                 }
             }
             .accessibilityHidden(true)
@@ -797,22 +873,22 @@ private struct QueueThumbnail: View {
     }
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        RoundedRectangle(cornerRadius: DS.Radius.thumb, style: .continuous)
+            .fill(DS.ColorRole.contentSurface)
             .frame(width: 56, height: 56)
             .overlay {
                 if let image {
                     Image(uiImage: image)
                         .resizable()
                         .aspectRatio(contentMode: isEdited ? .fit : .fill)
-                        .padding(isEdited ? 4 : 0)
+                        .padding(isEdited ? DS.Space.xs : 0)
                 } else {
                     Image(systemName: symbol)
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.thumb, style: .continuous))
             .task(id: previewData) {
                 if let previewData, let edited = UIImage(data: previewData) {
                     isEdited = true
@@ -838,8 +914,40 @@ private struct QueueThumbnail: View {
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+private func addSheetPreviewStore() -> (PackStore, UUID) {
     let store = PackStore()
     let pack = store.createPack(named: "Cats")
-    return AddStickerSheet(store: store, packID: pack.id)
+    return (store, pack.id)
 }
+
+#Preview("Light") {
+    let (store, id) = addSheetPreviewStore()
+    AddStickerSheet(store: store, packID: id)
+}
+
+#Preview("Dark") {
+    let (store, id) = addSheetPreviewStore()
+    AddStickerSheet(store: store, packID: id)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    let (store, id) = addSheetPreviewStore()
+    AddStickerSheet(store: store, packID: id)
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    let (store, id) = addSheetPreviewStore()
+    AddStickerSheet(store: store, packID: id)
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    let (store, id) = addSheetPreviewStore()
+    AddStickerSheet(store: store, packID: id)
+        .frame(width: 430, height: 932)
+}
+

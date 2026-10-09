@@ -97,17 +97,24 @@ struct RootView: View {
 
     private func importPackArchive(_ url: URL) {
         let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let data = try Data(contentsOf: url)
-            let pack = try PackArchive.importPack(from: data)
-            PackStore.shared.importPack(pack)
-            selection = .packs
-            successPulse += 1
-        } catch {
-            importError = (error as? LocalizedError)?.errorDescription
-                ?? error.localizedDescription
-            errorPulse += 1
+        Task { @MainActor in
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                // Whole-archive read + unzip off the main actor; only the UI
+                // state update re-enters it.
+                let pack = try await Task.detached(priority: .userInitiated) {
+                    let data = try Data(contentsOf: url)
+                    return try PackArchive.importPack(from: data)
+                }.value
+                PackStore.shared.importPack(pack)
+                SettingsStore.shared.refreshStorageSummary()
+                selection = .packs
+                successPulse += 1
+            } catch {
+                importError = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+                errorPulse += 1
+            }
         }
     }
 }

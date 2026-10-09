@@ -38,6 +38,9 @@ final class SettingsStore {
     private var storedHasSeenOnboarding: Bool
     private var storedExportMode: ExportMode
 
+    /// Cached storage total, recomputed by `refreshStorageSummary()`.
+    private var cachedStorageSummary: String
+
     /// Frames per second for video stickers, clamped to `5...30`.
     var defaultFPS: Int {
         get { storedDefaultFPS }
@@ -90,39 +93,71 @@ final class SettingsStore {
         self.storedHasSeenOnboarding = defaults.object(forKey: Keys.hasSeenOnboarding) as? Bool ?? false
         self.storedExportMode = defaults.string(forKey: Keys.exportMode)
             .flatMap(ExportMode.init(rawValue:)) ?? .whatsApp
+        self.cachedStorageSummary = Self.computeStorageSummary()
     }
 
     // MARK: - Storage
 
     /// Removes app temporary files. Never touches `Documents/Sources`, so
     /// stickers' editable originals are always preserved.
-    /// - Returns: approximate bytes freed.
+    ///
+    /// Very recent files are skipped: a share sheet or an in-flight
+    /// export/import may still be reading them. Bytes are only reported for
+    /// files that were actually removed.
+    /// - Parameter directory: temp directory to sweep (injectable for tests).
+    /// - Returns: bytes actually freed.
     @discardableResult
-    func clearCache() -> Int {
+    func clearCache(in directory: URL = FileManager.default.temporaryDirectory) -> Int {
         let fileManager = FileManager.default
-        let temporary = fileManager.temporaryDirectory
         guard let contents = try? fileManager.contentsOfDirectory(
-            at: temporary,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            at: directory,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else { return 0 }
 
+        let cutoff = Date(timeIntervalSinceNow: -Self.recentTempFileGrace)
         var freed = 0
         for url in contents {
-            freed += Self.byteSize(of: url)
-            try? fileManager.removeItem(at: url)
+            // ponytail: a 60 s grace window is a heuristic ceiling — a long-lived
+            // share sheet can still outlast it. Swap for an explicit in-use
+            // registry if that ever bites.
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            if let modified = values?.contentModificationDate, modified > cutoff { continue }
+
+            let size = Self.byteSize(of: url)
+            do {
+                try fileManager.removeItem(at: url)
+                freed += size
+            } catch {
+                // Still in use (or protected): leave it and don't report bytes.
+            }
         }
+        refreshStorageSummary()
         return freed
     }
 
     /// Human-readable size of `Documents/Sources` plus `packs.json`.
-    var storageSummary: String {
+    ///
+    /// Cached: reading this in a view body is cheap and never walks the
+    /// filesystem. Call `refreshStorageSummary()` after clearing the cache or
+    /// importing a pack to recompute it.
+    var storageSummary: String { cachedStorageSummary }
+
+    /// Recomputes the cached `storageSummary`.
+    func refreshStorageSummary() {
+        cachedStorageSummary = Self.computeStorageSummary()
+    }
+
+    private static func computeStorageSummary() -> String {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let sources = documents.appendingPathComponent("Sources", isDirectory: true)
         let packs = documents.appendingPathComponent("packs.json", isDirectory: false)
-        let total = Self.directorySize(sources) + (Self.fileSize(packs) ?? 0)
-        return Self.format(total)
+        let total = directorySize(sources) + (fileSize(packs) ?? 0)
+        return format(total)
     }
+
+    /// Temp files newer than this are treated as possibly in use.
+    private static let recentTempFileGrace: TimeInterval = 60
 
     // MARK: - Sizing helpers
 

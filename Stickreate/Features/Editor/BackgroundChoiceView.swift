@@ -14,28 +14,28 @@ struct BackgroundChoiceView: View {
     @Binding var choice: StickerBackgroundChoice
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: DS.Space.xl) {
             Text("Keep the background or lift the subject with Intelligent Cut.")
-                .font(.subheadline)
+                .font(DS.TextRole.supporting)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, DS.Space.xxl)
 
-            HStack(spacing: 16) {
+            HStack(spacing: DS.Space.lg) {
                 card(for: .original, title: "Original", subtitle: "Keeps the background")
                 card(for: .aiCut, title: "Intelligent Cut", subtitle: "Apple Vision · on-device")
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, DS.Space.xl)
 
             Text("Intelligent Cut runs on this iPhone. Your photo never leaves the device.")
-                .font(.caption2)
+                .font(DS.TextRole.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, DS.Space.xxl)
 
             Spacer(minLength: 0)
         }
-        .padding(.top, 20)
+        .padding(.top, DS.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -49,30 +49,40 @@ struct BackgroundChoiceView: View {
         return Button {
             choice = option
         } label: {
-            VStack(spacing: 10) {
+            VStack(spacing: DS.Space.sm) {
                 swatch(for: option)
                     .frame(maxWidth: .infinity)
                     .aspectRatio(1, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+                    .overlay(alignment: .topTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, DS.ColorRole.accent)
+                                .padding(DS.Space.sm)
+                                .accessibilityHidden(true)
+                        }
+                    }
 
                 Text(title)
-                    .font(.headline)
+                    .font(DS.TextRole.cardTitle)
 
                 Text(subtitle)
-                    .font(.caption)
+                    .font(DS.TextRole.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            .padding(12)
+            .padding(DS.Space.md)
             .frame(maxWidth: .infinity)
             .background(
-                Color(uiColor: .secondarySystemBackground),
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+                DS.ColorRole.contentSurface,
+                in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
                     .strokeBorder(
-                        isSelected ? Color.accentColor : Color.clear,
+                        isSelected ? DS.ColorRole.accent : Color.clear,
                         lineWidth: 3
                     )
             }
@@ -80,6 +90,7 @@ struct BackgroundChoiceView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(title), \(subtitle)")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .accessibilityHint("Selects \(title)")
     }
 
     @ViewBuilder
@@ -96,6 +107,7 @@ struct BackgroundChoiceView: View {
                     Image(systemName: "photo")
                         .font(.largeTitle)
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
             }
 
@@ -103,8 +115,9 @@ struct BackgroundChoiceView: View {
             ZStack {
                 CheckerboardSwatch()
                 Image(systemName: "person.crop.rectangle")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .font(.title.weight(.semibold))
+                    .foregroundStyle(DS.ColorRole.accent)
+                    .accessibilityHidden(true)
             }
         }
     }
@@ -137,6 +150,28 @@ private struct CheckerboardSwatch: View {
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+#Preview("Light") {
     BackgroundChoiceView(previewImage: nil, choice: .constant(.original))
+}
+
+#Preview("Dark") {
+    BackgroundChoiceView(previewImage: nil, choice: .constant(.aiCut))
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    BackgroundChoiceView(previewImage: nil, choice: .constant(.original))
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    BackgroundChoiceView(previewImage: nil, choice: .constant(.original))
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    BackgroundChoiceView(previewImage: nil, choice: .constant(.aiCut))
+        .frame(width: 430, height: 932)
 }

@@ -45,6 +45,8 @@
 - A queue of items with thumbnails; tapping an item opens its editor. The thumbnail shows
   the **edited** result once processed. One consistent label: **"Tap to edit"**. Processed
   items have an eye button to open the large preview.
+- A mixed multi-selection is trimmed to the first item's kind up front, with one clear
+  message ("Only one kind per pack"); a failed commit keeps the remaining queue intact.
 
 ### Photo editor — "Adjust"
 - Grey checkerboard canvas with pinch-zoom and drag-pan.
@@ -53,7 +55,9 @@
 - A **Keep/Remove** equal-weight segmented mode applies to Rectangle/Lasso; Restore brings
   pixels back, Erase removes.
 - **Original** restores the whole image. **Crop** applies in-editor (does not exit).
-- Undo/redo; the single commit action is **Apply**; Cancel is secondary (accent color).
+- Pinch uses `MagnifyGesture` (iOS 17+). Undo/redo; the single commit action is **Apply**;
+  Cancel is secondary. The crop rect is a VoiceOver element with a value and an
+  adjustable action (resize), and every tool button reports its selected state.
 
 ### Subject lift (VisionKit, Photos-like)
 - `ImageAnalysisInteraction` with `preferredInteractionTypes = .imageSubject`: press and
@@ -67,11 +71,13 @@
   a filmstrip with a white selection window (drag the center to move, edges to resize) and
   a vertical playhead. No frame-rate control.
 - Step 2 **Crop**: spatial crop rectangle over the preview (normalized, applied to all
-  frames).
+  frames). It is a VoiceOver element with a value and an adjustable action (resize).
 - Step 3 **Background**: explicit **Original** vs **Intelligent Cut** choice (default
   Original). Intelligent Cut is a single fast mask applied to all frames and can never fail
   (falls back to the original frames).
-- Creation shows a staged progress card (never a fake 100%).
+- Creation shows a staged progress card (never a fake 100%). Loops, scrubs and play/pause
+  use the awaited `player.seek`; the filmstrip's VoiceOver adjustable action moves the whole
+  selection window, with named actions to extend/shorten each edge.
 
 ### Export sheet — "Add to WhatsApp"
 - Shows ALL stickers in a scrollable grid; tapping one opens the large preview.
@@ -82,6 +88,17 @@
 ### Settings
 - Real, persisted options only: Keep original sources, Export mode, Clear cache (with freed
   size), storage summary, privacy note, app version + build.
+
+## States, accessibility & motion
+
+- Every owned screen has real **loading, empty (with a CTA), error and success** states;
+  no dead ends. Shared `EmptyState` / `LoadingState` / `SuccessLabel` / `StatusBanner`.
+- **Accessibility**: the photo-editor crop rect and the video `CropOverlay` are VoiceOver
+  elements with a label, a value and an `.accessibilityAdjustableAction`; the filmstrip's
+  adjustable action is symmetric (moves the whole window) with named actions for each edge;
+  the lifted-subject thumbnail offers a "Use this subject" action; creation-stage transitions
+  post VoiceOver announcements; icon-only controls keep labels; targets are ≥44pt.
+- **Motion**: `DS.Motion` springs, all gated on `accessibilityReduceMotion`.
 
 ## Editor flows (summary)
 

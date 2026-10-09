@@ -28,84 +28,7 @@ enum StickerFactory {
     /// Shared Core Image context for applying the single video mask to frames.
     private static let ciContext = CIContext()
 
-    /// Turns a picked photo, video, or GIF into a ready-to-use sticker.
-    ///
-    /// Video and GIF stickers also persist their original media so they can be
-    /// re-opened in the editor. `onStage` reports real creation phases.
-    static func makeSticker(
-        from item: PhotosPickerItem,
-        onStage: ((StickerCreationStage) -> Void)? = nil
-    ) async throws -> StickerItem {
-        onStage?(.loading)
-        let types = item.supportedContentTypes
-
-        if types.contains(where: { $0.conforms(to: .movie) }) {
-            let source = try await StickerSourceStore.importPicked(item)
-            guard case .video = source else { throw Failure.unsupported }
-            let frames = try await FrameExtractor.frames(
-                fromVideoAt: StickerSourceStore.url(for: source),
-                maxFrames: 240,
-                onProgress: { onStage?(.extracting($0)) }
-            )
-            return try await makeAnimated(
-                from: frames,
-                removeBackground: false,
-                source: source,
-                onStage: onStage
-            )
-        }
-
-        if types.contains(where: { $0.conforms(to: .gif) }) {
-            let source = try await StickerSourceStore.importPicked(item)
-            guard case .gif = source else { throw Failure.unsupported }
-            guard let data = try? Data(contentsOf: StickerSourceStore.url(for: source)) else {
-                throw Failure.empty
-            }
-            onStage?(.extracting(0))
-            let frames = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
-            onStage?(.extracting(1))
-            return try await makeAnimated(
-                from: frames,
-                removeBackground: false,
-                source: source,
-                onStage: onStage
-            )
-        }
-
-        if types.contains(where: { $0.conforms(to: .image) }) {
-            let data = try await imageData(from: item)
-            guard let image = UIImage(data: data) else {
-                throw Failure.empty
-            }
-            return try await makeStatic(from: image, onStage: onStage)
-        }
-
-        throw Failure.unsupported
-    }
-
-    // MARK: - Paths
-
-    private static func makeStatic(
-        from image: UIImage,
-        onStage: ((StickerCreationStage) -> Void)? = nil
-    ) async throws -> StickerItem {
-        // Background removal is best-effort: any failure falls back to the
-        // original image so sticker creation never blocks.
-        onStage?(.cutting(0))
-        let subject = (try? await BackgroundRemover.removeBackground(
-            from: image,
-            progress: { onStage?(.cutting($0)) }
-        )) ?? image
-        onStage?(.cutting(1))
-        return try encodeStatic(subject, onStage: onStage)
-    }
-
-    /// Loads a picked image as an upright `UIImage` without touching the pixels.
-    static func loadUprightImage(from item: PhotosPickerItem) async throws -> UIImage {
-        let data = try await imageData(from: item)
-        guard let image = UIImage(data: data) else { throw Failure.empty }
-        return image.upNormalized() ?? image
-    }
+    // MARK: - Encoding
 
     /// Encodes an already-prepared image into a static sticker (no background removal).
     static func encodeStatic(
@@ -419,19 +342,6 @@ enum StickerFactory {
     }
 
     // MARK: - Loading
-
-    private static func imageData(from item: PhotosPickerItem) async throws -> Data {
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self) else {
-                throw Failure.empty
-            }
-            return data
-        } catch let failure as Failure {
-            throw failure
-        } catch {
-            throw Failure.failed(error.localizedDescription)
-        }
-    }
 
     private static func movieURL(from item: PhotosPickerItem) async throws -> URL {
         do {

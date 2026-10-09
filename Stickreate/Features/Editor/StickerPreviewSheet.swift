@@ -30,12 +30,12 @@ struct StickerPreviewSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
+            VStack(spacing: DS.Space.lg) {
                 preview
                 details
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 8)
+            .padding(.horizontal, DS.Space.xl)
+            .padding(.bottom, DS.Space.sm)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(uiColor: .systemBackground))
             .navigationTitle("Preview")
@@ -87,7 +87,7 @@ struct StickerPreviewSheet: View {
                 }
             }
             .frame(width: side, height: side)
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.large, style: .continuous))
             .overlay {
                 if item.kind == .animated {
                     playPauseButton
@@ -105,7 +105,7 @@ struct StickerPreviewSheet: View {
             isPlaying.toggle()
         } label: {
             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                .font(.system(size: 30, weight: .bold))
+                .font(.title.weight(.bold))
                 .frame(width: 72, height: 72)
                 .contentShape(Circle())
         }
@@ -115,19 +115,20 @@ struct StickerPreviewSheet: View {
     }
 
     private var details: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: DS.Space.xs) {
             Text(item.kind == .animated ? "Animated sticker" : "Sticker")
-                .font(.headline)
+                .font(DS.TextRole.cardTitle)
 
             if isCover {
                 Label("Cover", systemImage: "star.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .font(DS.TextRole.caption.weight(.semibold))
+                    .foregroundStyle(DS.ColorRole.accent)
             }
 
             if !item.emojis.isEmpty {
                 Text(item.emojis.joined(separator: " "))
                     .font(.title3)
+                    .accessibilityLabel("Emojis \(item.emojis.joined(separator: " "))")
             }
         }
         .frame(maxWidth: .infinity)
@@ -136,7 +137,7 @@ struct StickerPreviewSheet: View {
     // MARK: - Actions
 
     private var actions: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DS.Space.sm) {
             if let onEdit {
                 actionButton(
                     "Edit",
@@ -183,8 +184,8 @@ struct StickerPreviewSheet: View {
                 )
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.vertical, DS.Space.md)
     }
 
     private func actionButton(
@@ -307,3 +308,34 @@ private final class PlaybackAnimatedImageView: SDAnimatedImageView {
         }
     }
 }
+
+// MARK: - Previews
+
+private func previewStickerItem() -> StickerItem {
+    StickerItem(kind: .static, emojis: ["😺"], stickerData: Data(), previewData: Data())
+}
+
+#Preview("Light") {
+    StickerPreviewSheet(item: previewStickerItem())
+}
+
+#Preview("Dark") {
+    StickerPreviewSheet(item: previewStickerItem())
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    StickerPreviewSheet(item: previewStickerItem())
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    StickerPreviewSheet(item: previewStickerItem())
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    StickerPreviewSheet(item: previewStickerItem())
+        .frame(width: 430, height: 932)
+}
+

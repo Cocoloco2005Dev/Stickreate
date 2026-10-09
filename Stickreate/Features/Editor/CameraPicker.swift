@@ -2,6 +2,9 @@ import SwiftUI
 import UIKit
 
 /// Wraps `UIImagePickerController` configured for camera capture.
+///
+/// Presents the system camera UI, so it has no custom chrome and carries no
+/// design-system tokens. The capture/cancel closures are the whole surface.
 struct CameraPicker: UIViewControllerRepresentable {
     let onCapture: (UIImage) -> Void
     let onCancel: () -> Void

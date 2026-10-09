@@ -6,7 +6,9 @@ import Observation
 
 /// Live playback flag for the preview. A reference type so the running
 /// `AVPlayer` observers read the current value instead of a stale snapshot of
-/// the view — the bug that stopped looping.
+/// the view — the bug that stopped looping. `@MainActor` because every reader
+/// and writer is the UI.
+@MainActor
 @Observable
 private final class PlaybackModel {
     var isPlaying = false
@@ -64,6 +66,9 @@ struct VideoTrimView: View {
     @State private var isCreating = false
     @State private var stage: StickerCreationStage?
     @State private var errorMessage: String?
+    @State private var successPulse = 0
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var sourceURL: URL { StickerSourceStore.url(for: source) }
 
@@ -106,6 +111,8 @@ struct VideoTrimView: View {
         .onChange(of: lowerBound) { _, _ in handleSelectionChange() }
         .onChange(of: upperBound) { _, _ in handleSelectionChange() }
         .onDisappear { teardownPlayer() }
+        .haptic(.success, trigger: successPulse)
+        .announceOnChange(of: stage.announcementPhase) { $0 }
         .alert(
             "Couldn't create sticker",
             isPresented: Binding(
@@ -140,7 +147,6 @@ struct VideoTrimView: View {
                 advance()
             }
             .fontWeight(.semibold)
-            .tint(.blue)
             .disabled(draft == nil || isCreating || (step == .trim && clipLength <= 0))
         }
     }
@@ -165,21 +171,20 @@ struct VideoTrimView: View {
 
                 if isCreating {
                     progressBanner
-                        .padding(.horizontal, 16)
-                        .padding(.top, 10)
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.top, DS.Space.md)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            .animation(reduceMotion ? nil : DS.Motion.standard, value: isCreating)
         } else if isLoading {
-            ProgressView("Loading video…")
-                .controlSize(.large)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            LoadingState(title: "Loading video…")
         } else {
-            ContentUnavailableView {
-                Label("Couldn't Open This Video", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(loadErrorMessage ?? "Try choosing a different video.")
-            } actions: {
+            EmptyState(
+                symbol: "exclamationmark.triangle",
+                title: "Couldn't Open This Video",
+                message: loadErrorMessage ?? "Try choosing a different video."
+            ) {
                 Button("Try Again") { retry() }
                     .buttonStyle(.glassProminent)
                 Button("Close") { dismiss() }
@@ -221,13 +226,13 @@ struct VideoTrimView: View {
     /// The filmstrip's moving playhead is the position indicator — no linear
     /// scrubber bar.
     private func transportRow(showPlay: Bool) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Space.md) {
             if showPlay {
                 playPauseButton
             }
 
             Text("\(timeString(playhead)) / \(timeString(duration))")
-                .font(.subheadline.monospacedDigit())
+                .font(DS.TextRole.supporting.monospacedDigit())
                 .foregroundStyle(.white)
                 .accessibilityLabel("Playback position")
                 .accessibilityValue("\(timeString(playhead)) of \(timeString(duration))")
@@ -241,9 +246,9 @@ struct VideoTrimView: View {
             togglePlayback()
         } label: {
             Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
-                .font(.subheadline.weight(.bold))
+                .font(DS.TextRole.supporting.weight(.bold))
                 .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
+                .frame(width: DS.minTapTarget, height: DS.minTapTarget)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -253,19 +258,19 @@ struct VideoTrimView: View {
     // MARK: - Bottom panel
 
     private var bottomPanel: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DS.Space.md) {
             transportRow(showPlay: true)
             selectionReadout
             filmstripView
 
             Text("WhatsApp caps animated stickers at 500 KB and \(Int(Limits.maxAnimationDuration)) s, so the app compresses automatically.")
-                .font(.caption2)
+                .font(DS.TextRole.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.top, DS.Space.lg)
+        .padding(.bottom, DS.Space.md)
         .background(Color.black)
     }
 
@@ -316,12 +321,12 @@ struct VideoTrimView: View {
     }
 
     private var cropControls: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DS.Space.md) {
             transportRow(showPlay: true)
 
-            HStack(spacing: 12) {
+            HStack(spacing: DS.Space.md) {
                 Text("Drag to frame the crop. It applies to every frame.")
-                    .font(.caption2)
+                    .font(DS.TextRole.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -335,9 +340,9 @@ struct VideoTrimView: View {
 
             filmstripView
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.top, DS.Space.lg)
+        .padding(.bottom, DS.Space.md)
         .background(Color.black)
     }
 
@@ -369,13 +374,13 @@ struct VideoTrimView: View {
     }
 
     private var selectionReadout: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: DS.Space.sm) {
             Text("\(seconds(lowerBound))–\(seconds(upperBound)) s")
-                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .font(DS.TextRole.supporting.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white)
 
             Text("· \(seconds(clipLength)) s")
-                .font(.subheadline.monospacedDigit())
+                .font(DS.TextRole.supporting.monospacedDigit())
                 .foregroundStyle(.secondary)
 
             Spacer(minLength: 0)
@@ -385,17 +390,17 @@ struct VideoTrimView: View {
     // MARK: - Progress banner (top, inline — never covers the caption below)
 
     private var progressBanner: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Space.md) {
             stageIndicator
 
             Text(stageLabel)
-                .font(.subheadline.weight(.semibold))
+                .font(DS.TextRole.supporting.weight(.semibold))
                 .foregroundStyle(.white)
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.vertical, DS.Space.md)
         .background(.black.opacity(0.8), in: Capsule())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(stageLabel)
@@ -455,21 +460,25 @@ struct VideoTrimView: View {
                 forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
                 queue: .main
             ) { time in
-                let seconds = CMTimeGetSeconds(time)
-                guard seconds.isFinite else { return }
+                // `queue: .main` guarantees the main thread, so asserting main
+                // isolation lets this touch the @MainActor playback state.
+                MainActor.assumeIsolated {
+                    let seconds = CMTimeGetSeconds(time)
+                    guard seconds.isFinite else { return }
 
-                let playing = player.timeControlStatus != .paused
-                if playback.isPlaying != playing { playback.isPlaying = playing }
+                    let playing = player.timeControlStatus != .paused
+                    if playback.isPlaying != playing { playback.isPlaying = playing }
 
-                guard playing else {
-                    playhead = min(max(seconds, lowerBound), upperBound)
-                    return
-                }
-                // Fallback loop if playback crosses the selection between ticks.
-                if seconds >= upperBound || seconds < lowerBound {
-                    restartPlayback()
-                } else {
-                    playhead = seconds
+                    guard playing else {
+                        playhead = min(max(seconds, lowerBound), upperBound)
+                        return
+                    }
+                    // Fallback loop if playback crosses the selection between ticks.
+                    if seconds >= upperBound || seconds < lowerBound {
+                        restartPlayback()
+                    } else {
+                        playhead = seconds
+                    }
                 }
             }
 
@@ -482,7 +491,7 @@ struct VideoTrimView: View {
                 object: player.currentItem,
                 queue: .main
             ) { _ in
-                restartPlayback()
+                MainActor.assumeIsolated { restartPlayback() }
             }
 
             isLoading = false
@@ -570,21 +579,26 @@ struct VideoTrimView: View {
         }
         let boundary = NSValue(time: CMTime(seconds: upperBound, preferredTimescale: 600))
         loopObserver = player.addBoundaryTimeObserver(forTimes: [boundary], queue: .main) {
-            guard player.timeControlStatus != .paused else { return }
-            restartPlayback()
+            MainActor.assumeIsolated {
+                guard player.timeControlStatus != .paused else { return }
+                restartPlayback()
+            }
         }
     }
 
-    /// Seeks to the start of the selection and keeps playing.
+    /// Seeks to the start of the selection and keeps playing. Uses the awaited
+    /// `seek` overload so the play() never races an unfinished seek.
     private func restartPlayback() {
         guard let player else { return }
-        player.seek(
-            to: CMTime(seconds: lowerBound, preferredTimescale: 600),
-            toleranceBefore: .zero,
-            toleranceAfter: .zero
-        )
         playhead = lowerBound
-        player.play()
+        Task { @MainActor in
+            _ = await player.seek(
+                to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+            player.play()
+        }
     }
 
     /// When the selection moves while playing, immediately clamp the playhead
@@ -645,12 +659,14 @@ struct VideoTrimView: View {
             player.pause()
             playback.isPlaying = false
         }
-        player.seek(
-            to: CMTime(seconds: time, preferredTimescale: 600),
-            toleranceBefore: .zero,
-            toleranceAfter: .zero
-        )
         playhead = time
+        Task { @MainActor in
+            _ = await player.seek(
+                to: CMTime(seconds: time, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+        }
     }
 
     private func togglePlayback() {
@@ -659,15 +675,18 @@ struct VideoTrimView: View {
             player.pause()
             playback.isPlaying = false
         } else {
-            if playhead >= upperBound - 0.05 || playhead < lowerBound - 0.05 {
-                player.seek(
-                    to: CMTime(seconds: lowerBound, preferredTimescale: 600),
-                    toleranceBefore: .zero,
-                    toleranceAfter: .zero
-                )
-            }
-            player.playImmediately(atRate: 1.0)
+            let needsSeek = playhead >= upperBound - 0.05 || playhead < lowerBound - 0.05
             playback.isPlaying = true
+            Task { @MainActor in
+                if needsSeek {
+                    _ = await player.seek(
+                        to: CMTime(seconds: lowerBound, preferredTimescale: 600),
+                        toleranceBefore: .zero,
+                        toleranceAfter: .zero
+                    )
+                }
+                player.playImmediately(atRate: 1.0)
+            }
         }
     }
 
@@ -735,6 +754,7 @@ struct VideoTrimView: View {
                     }
                 )
                 isCreating = false
+                successPulse += 1
                 onDone(sticker)
                 dismiss()
             } catch {
@@ -807,7 +827,7 @@ private struct CropOverlay: View {
                 Circle()
                     .fill(Color.white)
                     .frame(width: 36, height: 36)
-                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 3))
+                    .overlay(Circle().stroke(DS.ColorRole.accent, lineWidth: 3))
                     .shadow(radius: 1)
                     .position(point)
                     .allowsHitTesting(false)
@@ -819,6 +839,24 @@ private struct CropOverlay: View {
         .accessibilityLabel("Crop area")
         .accessibilityValue(Text(accessibilityValue))
         .accessibilityHint("Drag to move, or the corners to resize")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: adjustCrop(expanding: true)
+            case .decrement: adjustCrop(expanding: false)
+            @unknown default: break
+            }
+        }
+    }
+
+    /// VoiceOver-adjustable resize of the crop, kept centered and in bounds.
+    private func adjustCrop(expanding: Bool) {
+        let step: CGFloat = 0.05
+        let delta = expanding ? step : -step
+        let newWidth = min(max(cropRect.width + delta, minSize), 1)
+        let newHeight = min(max(cropRect.height + delta, minSize), 1)
+        let x = min(max(0, cropRect.midX - newWidth / 2), 1 - newWidth)
+        let y = min(max(0, cropRect.midY - newHeight / 2), 1 - newHeight)
+        cropRect = CGRect(x: x, y: y, width: newWidth, height: newHeight)
     }
 
     private func dragGesture(rect: CGRect) -> some Gesture {
@@ -1010,19 +1048,41 @@ private struct FilmstripView: View {
         .accessibilityElement()
         .accessibilityLabel("Trim range")
         .accessibilityValue(Text("\(seconds(lower)) to \(seconds(upper)) seconds"))
-        .accessibilityHint("Drag the selection to move it, or its edges to resize")
+        .accessibilityHint("Swipe up or down to move the selection; use the actions to resize an edge")
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment:
-                upper = clampedUpper(upper + 0.5)
-                onScrub(upper)
+                moveWindow(by: 0.5)
             case .decrement:
-                upper = clampedUpper(upper - 0.5)
-                onScrub(upper)
+                moveWindow(by: -0.5)
             @unknown default:
                 break
             }
         }
+        .accessibilityAction(named: Text("Extend end")) { adjustUpper(by: 0.5) }
+        .accessibilityAction(named: Text("Shorten end")) { adjustUpper(by: -0.5) }
+        .accessibilityAction(named: Text("Extend start")) { adjustLower(by: -0.5) }
+        .accessibilityAction(named: Text("Shorten start")) { adjustLower(by: 0.5) }
+    }
+
+    /// Moves the whole selection window by `delta` seconds, preserving its span,
+    /// so the adjustable action is symmetric instead of only moving one edge.
+    private func moveWindow(by delta: TimeInterval) {
+        let span = upper - lower
+        let newLower = min(max(0, lower + delta), max(0, duration - span))
+        lower = newLower
+        upper = newLower + span
+        onScrub(lower)
+    }
+
+    private func adjustUpper(by delta: TimeInterval) {
+        upper = clampedUpper(upper + delta)
+        onScrub(upper)
+    }
+
+    private func adjustLower(by delta: TimeInterval) {
+        lower = clampedLower(lower + delta)
+        onScrub(lower)
     }
 
     private func begin(at startX: CGFloat, lowerX: CGFloat, upperX: CGFloat, width: CGFloat) {
@@ -1086,11 +1146,11 @@ private struct FilmstripView: View {
     private var playheadMark: some View {
         VStack(spacing: 0) {
             Circle()
-                .fill(Color.accentColor)
+                .fill(DS.ColorRole.accent)
                 .frame(width: 8, height: 8)
 
             Rectangle()
-                .fill(Color.accentColor)
+                .fill(DS.ColorRole.accent)
                 .frame(width: 2)
         }
         .frame(height: stripHeight)
@@ -1124,3 +1184,34 @@ private struct FilmstripView: View {
         String(format: "%.1f", value)
     }
 }
+
+// MARK: - Previews
+
+private func previewVideoSource() -> StickerSource {
+    .video(fileName: "preview.mov")
+}
+
+#Preview("Light") {
+    VideoTrimView(source: previewVideoSource()) { _ in }
+}
+
+#Preview("Dark") {
+    VideoTrimView(source: previewVideoSource()) { _ in }
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    VideoTrimView(source: previewVideoSource()) { _ in }
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    VideoTrimView(source: previewVideoSource()) { _ in }
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    VideoTrimView(source: previewVideoSource()) { _ in }
+        .frame(width: 430, height: 932)
+}
+

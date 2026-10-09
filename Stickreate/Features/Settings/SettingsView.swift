@@ -26,7 +26,7 @@ struct SettingsView: View {
             } header: {
                 Text("Export")
             } footer: {
-                Text("WhatsApp sends the pack straight to the app. File shares a .stickreatepack you can send or import later.")
+                Text("WhatsApp sends the pack straight to the app. File shares a pack file you can send or import later.")
             }
 
             Section {
@@ -37,9 +37,10 @@ struct SettingsView: View {
                 }
 
                 if let cacheNote {
-                    Text(cacheNote)
-                        .font(.footnote)
+                    Label(cacheNote, systemImage: cacheIcon)
+                        .font(DS.TextRole.footnote)
                         .foregroundStyle(.secondary)
+                        .accessibilityLabel(cacheNote)
                 }
             } header: {
                 Text("Storage")
@@ -65,6 +66,11 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .haptic(.success, trigger: cacheNote)
+    }
+
+    private var cacheIcon: String {
+        (cacheNote?.hasPrefix("Freed") ?? false) ? "checkmark.circle.fill" : "info.circle"
     }
 
     private func clearCache() {
@@ -89,8 +95,38 @@ private extension Bundle {
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+#Preview("Light") {
     NavigationStack {
         SettingsView()
     }
+}
+
+#Preview("Dark") {
+    NavigationStack {
+        SettingsView()
+    }
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    NavigationStack {
+        SettingsView()
+    }
+    .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    NavigationStack {
+        SettingsView()
+    }
+    .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    NavigationStack {
+        SettingsView()
+    }
+    .frame(width: 430, height: 932)
 }

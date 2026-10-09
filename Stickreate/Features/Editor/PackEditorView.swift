@@ -482,12 +482,17 @@ struct PackEditorView: View {
     /// backup/transfer path; the WhatsApp import is the primary action.
     private func exportFile() {
         guard let pack else { return }
-        do {
-            let url = try PackArchive.writeTemporaryFile(pack)
-            shareItem = ShareItem(url: url)
-        } catch {
-            activeAlert = .error(error.localizedDescription)
-            errorPulse += 1
+        Task { @MainActor in
+            do {
+                // ZIP build + disk write off the main actor.
+                let url = try await Task.detached(priority: .userInitiated) {
+                    try PackArchive.writeTemporaryFile(pack)
+                }.value
+                shareItem = ShareItem(url: url)
+            } catch {
+                activeAlert = .error(error.localizedDescription)
+                errorPulse += 1
+            }
         }
     }
 }

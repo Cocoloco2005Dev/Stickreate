@@ -33,6 +33,8 @@ enum DS {
         static let thumb: CGFloat = 12
         static let tile: CGFloat = 16
         static let card: CGFloat = 20
+        /// Large surfaces: full-screen previews and overlay cards.
+        static let large: CGFloat = 24
         static let pill: CGFloat = 999
     }
 

@@ -20,6 +20,7 @@ struct SubjectLiftView: View {
     let onLift: (UIImage) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var model = SubjectLiftModel()
 
     // Drag-to-use state, all in the global coordinate space.
@@ -70,39 +71,40 @@ struct SubjectLiftView: View {
     /// and both buttons are always present (just disabled/hidden-content until a
     /// subject is lifted), so nothing pops or re-lays out mid-flow.
     private var bottomBar: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DS.Space.md) {
             Text("Press and hold a subject, then drag it into the box")
-                .font(.footnote)
+                .font(DS.TextRole.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            HStack(spacing: 16) {
+            HStack(spacing: DS.Space.lg) {
                 liftedSlot
 
                 Image(systemName: "arrow.right")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
 
                 dropTarget
             }
 
-            HStack(spacing: 12) {
+            HStack(spacing: DS.Space.md) {
                 Button("Lift Different") { model.liftedImage = nil }
                     .buttonStyle(.glass)
-                    .frame(minHeight: 44)
+                    .frame(minHeight: DS.minTapTarget)
                     .disabled(model.liftedImage == nil)
                     .accessibilityHint("Clears this subject so you can lift another")
 
                 Button("Use Subject") { confirmLifted() }
                     .buttonStyle(.glassProminent)
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .frame(maxWidth: .infinity, minHeight: DS.minTapTarget)
                     .disabled(model.liftedImage == nil)
                     .accessibilityHint("Uses this subject in the editor")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 4)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.top, DS.Space.md)
+        .padding(.bottom, DS.Space.xs)
         .background(.regularMaterial, ignoresSafeAreaEdges: .bottom)
         .overlay(alignment: .top) { Divider() }
     }
@@ -113,7 +115,7 @@ struct SubjectLiftView: View {
         if let lifted = model.liftedImage {
             liftedThumbnail(lifted)
         } else {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
                 .fill(Color(uiColor: .secondarySystemFill))
                 .frame(width: 84, height: 84)
                 .overlay {
@@ -122,7 +124,7 @@ struct SubjectLiftView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
                         .strokeBorder(
                             Color.secondary.opacity(0.4),
                             style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
@@ -139,9 +141,9 @@ struct SubjectLiftView: View {
             .scaledToFit()
             .frame(width: 84, height: 84)
             .background(LiftCheckerboard())
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
             )
             .shadow(
@@ -155,26 +157,28 @@ struct SubjectLiftView: View {
             .gesture(dragToUse)
             .accessibilityLabel("Lifted subject")
             .accessibilityHint("Drag into the box, or use the Use Subject button")
+            .accessibilityAddTraits(.isImage)
+            .accessibilityAction(named: Text("Use this subject")) { confirmLifted() }
     }
 
     private var dropTarget: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: DS.Space.sm) {
             Image(systemName: isOverTarget ? "checkmark.circle.fill" : "arrow.down.to.line")
                 .font(.title2)
             Text("Use this subject")
-                .font(.footnote.weight(.semibold))
+                .font(DS.TextRole.footnote.weight(.semibold))
                 .multilineTextAlignment(.center)
         }
-        .foregroundStyle(isOverTarget ? Color.accentColor : Color.primary)
+        .foregroundStyle(isOverTarget ? DS.ColorRole.accent : Color.primary)
         .frame(maxWidth: .infinity, minHeight: 84)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(isOverTarget ? Color.accentColor.opacity(0.18) : Color(uiColor: .secondarySystemFill))
+            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
+                .fill(isOverTarget ? DS.ColorRole.accent.opacity(0.18) : Color(uiColor: .secondarySystemFill))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
                 .strokeBorder(
-                    isOverTarget ? Color.accentColor : Color.secondary.opacity(0.5),
+                    isOverTarget ? DS.ColorRole.accent : Color.secondary.opacity(0.5),
                     style: StrokeStyle(lineWidth: 2, dash: [7, 5])
                 )
         )
@@ -183,6 +187,7 @@ struct SubjectLiftView: View {
         } action: { frame in
             targetFrame = frame
         }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Use this subject target")
     }
 
@@ -195,7 +200,7 @@ struct SubjectLiftView: View {
             }
             .onEnded { value in
                 let dropped = targetFrame.contains(value.location)
-                withAnimation(.snappy) {
+                withAnimation(reduceMotion ? nil : DS.Motion.quick) {
                     isDragging = false
                     dragTranslation = .zero
                     isOverTarget = false
@@ -210,45 +215,47 @@ struct SubjectLiftView: View {
     // MARK: - Overlays
 
     private var analyzingOverlay: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DS.Space.md) {
             ProgressView()
                 .controlSize(.large)
                 .tint(.white)
             Text("Finding subjects…")
-                .font(.subheadline.weight(.medium))
+                .font(DS.TextRole.supporting.weight(.medium))
                 .foregroundStyle(.white)
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 22)
+        .padding(.horizontal, DS.Space.xxl)
+        .padding(.vertical, DS.Space.xl)
         .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
                 .fill(Color.black.opacity(0.72))
         )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Finding subjects")
     }
 
     /// No dead-end: when VisionKit finds nothing, steer back to the manual tools.
     private var emptyOverlay: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: DS.Space.lg) {
             Image(systemName: "person.crop.rectangle.badge.xmark")
-                .font(.system(size: 40))
+                .font(.largeTitle)
             Text("No subjects found")
-                .font(.headline)
+                .font(DS.TextRole.cardTitle)
             Text("VisionKit couldn't find a subject to lift. Go back and refine with Restore, Erase, Rectangle, Lasso or Crop.")
-                .font(.footnote)
+                .font(DS.TextRole.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button("Back to tools") { dismiss() }
                 .buttonStyle(.glass)
-                .frame(minHeight: 44)
+                .frame(minHeight: DS.minTapTarget)
         }
         .foregroundStyle(.white)
-        .padding(26)
+        .padding(DS.Space.xxl)
         .frame(maxWidth: 320)
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: DS.Radius.large, style: .continuous)
                 .fill(Color.black.opacity(0.72))
         )
-        .padding(.horizontal, 24)
+        .padding(.horizontal, DS.Space.xxl)
     }
 
     // MARK: - Actions
@@ -416,3 +423,34 @@ private struct LiftCheckerboard: View {
         }
     }
 }
+
+// MARK: - Previews
+
+private func previewLiftImage() -> UIImage {
+    UIImage(systemName: "photo") ?? UIImage()
+}
+
+#Preview("Light") {
+    SubjectLiftView(image: previewLiftImage()) { _ in }
+}
+
+#Preview("Dark") {
+    SubjectLiftView(image: previewLiftImage()) { _ in }
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    SubjectLiftView(image: previewLiftImage()) { _ in }
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    SubjectLiftView(image: previewLiftImage()) { _ in }
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    SubjectLiftView(image: previewLiftImage()) { _ in }
+        .frame(width: 430, height: 932)
+}
+

@@ -69,6 +69,9 @@ struct StickerEditorView: View {
     @State private var applyStage: StickerCreationStage?
 
     @State private var alertMessage: String?
+    @State private var successPulse = 0
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let maxZoom: CGFloat = 5
     private static let fullCrop = CGRect(x: 0, y: 0, width: 1, height: 1)
@@ -89,17 +92,17 @@ struct StickerEditorView: View {
                 if let editor {
                     canvas(editor)
                 } else if isLoading {
-                    ProgressView("Preparing photo…")
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    LoadingState(title: "Preparing photo…")
                 } else {
-                    ContentUnavailableView {
-                        Label("Couldn't Open This Photo", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(loadErrorMessage ?? "Try choosing a different photo.")
-                    } actions: {
+                    EmptyState(
+                        symbol: "exclamationmark.triangle",
+                        title: "Couldn't Open This Photo",
+                        message: loadErrorMessage ?? "Try choosing a different photo."
+                    ) {
                         Button("Try Again") { retry() }
+                            .buttonStyle(.glassProminent)
                         Button("Cancel", role: .cancel) { dismiss() }
+                            .buttonStyle(.glass)
                     }
                 }
             }
@@ -121,6 +124,8 @@ struct StickerEditorView: View {
             } message: {
                 Text(alertMessage ?? "")
             }
+            .haptic(.success, trigger: successPulse)
+            .announceOnChange(of: applyStage.announcementPhase) { $0 }
         }
         .task { await load() }
         .fullScreenCover(isPresented: $showSubjectLift) { subjectLiftCover }
@@ -150,7 +155,7 @@ struct StickerEditorView: View {
                         radius: hasLiftedSubject ? 14 : 0,
                         y: hasLiftedSubject ? 8 : 0
                     )
-                    .animation(.easeInOut(duration: 0.2), value: hasLiftedSubject)
+                    .animation(reduceMotion ? nil : DS.Motion.quick, value: hasLiftedSubject)
                     .position(x: frame.midX, y: frame.midY)
 
                 canvasOverlay(frame: frame)
@@ -263,11 +268,22 @@ struct StickerEditorView: View {
                     Circle()
                         .fill(Color.white)
                         .frame(width: 24, height: 24)
-                        .overlay(Circle().stroke(Color.accentColor, lineWidth: 3))
+                        .overlay(Circle().stroke(DS.ColorRole.accent, lineWidth: 3))
                         .shadow(radius: 2)
                         .position(corners[index])
                         .allowsHitTesting(false)
                 }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Crop area")
+        .accessibilityValue(Text(cropAccessibilityValue))
+        .accessibilityHint("Swipe up or down to resize the crop")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: adjustCrop(expanding: true)
+            case .decrement: adjustCrop(expanding: false)
+            @unknown default: break
             }
         }
     }
@@ -336,7 +352,7 @@ struct StickerEditorView: View {
     }
 
     private func magnifyGesture(canvas: CGSize, imageSize: CGSize) -> some Gesture {
-        MagnificationGesture()
+        MagnifyGesture()
             .onChanged { value in
                 if showZoomHint { showZoomHint = false }
                 if !magnifying {
@@ -344,7 +360,7 @@ struct StickerEditorView: View {
                     zoomStart = zoom
                     panStart = pan
                 }
-                zoom = min(max(zoomStart * value, 1), maxZoom)
+                zoom = min(max(zoomStart * value.magnification, 1), maxZoom)
                 pan = StickerGeometry.clampedPan(pan, canvas: canvas, imageSize: imageSize, zoom: zoom)
             }
             .onEnded { _ in
@@ -448,12 +464,8 @@ struct StickerEditorView: View {
         hasLiftedSubject = true
         hasCommittedChange = true
         applyInitialZoom(canvas: canvasSize, imageSize: updated.base.size, force: true)
-        haptic()
+        successPulse += 1
         flash("Subject lifted · refine with the manual tools.", duration: 2.0)
-    }
-
-    private func haptic() {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
     private func flash(_ text: String, duration: TimeInterval = 1.2) {
@@ -632,6 +644,27 @@ struct StickerEditorView: View {
         ]
     }
 
+    /// VoiceOver value for the crop rect, in normalized percentages.
+    private var cropAccessibilityValue: String {
+        let x = Int((cropRect.minX * 100).rounded())
+        let y = Int((cropRect.minY * 100).rounded())
+        let width = Int((cropRect.width * 100).rounded())
+        let height = Int((cropRect.height * 100).rounded())
+        return "x \(x) percent, y \(y) percent, \(width) percent wide, \(height) percent tall"
+    }
+
+    /// VoiceOver-adjustable resize of the crop, kept centered and in bounds.
+    private func adjustCrop(expanding: Bool) {
+        let step: CGFloat = 0.05
+        let delta = expanding ? step : -step
+        let minSize: CGFloat = 0.1
+        let newWidth = min(max(cropRect.width + delta, minSize), 1)
+        let newHeight = min(max(cropRect.height + delta, minSize), 1)
+        let x = min(max(0, cropRect.midX - newWidth / 2), 1 - newWidth)
+        let y = min(max(0, cropRect.midY - newHeight / 2), 1 - newHeight)
+        cropRect = CGRect(x: x, y: y, width: newWidth, height: newHeight)
+    }
+
     // MARK: - Control layer
 
     private var controlLayer: some View {
@@ -644,12 +677,12 @@ struct StickerEditorView: View {
 
             actionBar
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 4)
+        .padding(.horizontal, DS.Space.lg)
+        .padding(.top, DS.Space.md)
+        .padding(.bottom, DS.Space.xs)
         .background(.regularMaterial, ignoresSafeAreaEdges: .bottom)
         .overlay(alignment: .top) { Divider() }
-        .animation(.snappy, value: activeTool)
+        .animation(reduceMotion ? nil : DS.Motion.standard, value: activeTool)
     }
 
     @ViewBuilder
@@ -727,20 +760,22 @@ struct StickerEditorView: View {
     }
 
     private var brushRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Space.md) {
             Image(systemName: "circle.fill")
-                .font(.system(size: 7))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
 
             Slider(value: brushBinding, in: 0.02...0.3)
                 .accessibilityLabel("Paint size")
                 .accessibilityValue(Text(brushAccessibilityValue))
 
             Image(systemName: "circle.fill")
-                .font(.system(size: 18))
+                .font(.title3)
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, DS.Space.xs)
     }
 
     // MARK: - Keep / Remove (equal-weight mode control)
@@ -804,17 +839,17 @@ struct StickerEditorView: View {
         return Button {
             select(tool)
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: DS.Space.sm) {
                 Image(systemName: tool.symbol)
-                    .font(.system(size: 20))
+                    .font(.title3)
                     .frame(width: 36, height: 34)
                     .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        RoundedRectangle(cornerRadius: DS.Radius.badge, style: .continuous)
                             .fill(selected ? Color(uiColor: .systemGray5) : Color.clear)
                     )
 
                 Text(tool.title)
-                    .font(.caption2)
+                    .font(DS.TextRole.caption)
                     .foregroundStyle(selected ? .primary : .secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
@@ -830,11 +865,11 @@ struct StickerEditorView: View {
     // MARK: - Action bar
 
     private var actionBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DS.Space.sm) {
             Button("Cancel") { cancel() }
                 .fontWeight(.medium)
-                .foregroundStyle(Color.accentColor)
-                .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+                .foregroundStyle(DS.ColorRole.accent)
+                .frame(minWidth: DS.minTapTarget, minHeight: DS.minTapTarget, alignment: .leading)
 
             Spacer(minLength: 0)
 
@@ -843,8 +878,8 @@ struct StickerEditorView: View {
                 hasCommittedChange = true
             } label: {
                 Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 18, weight: .medium))
-                    .frame(width: 44, height: 44)
+                    .font(.body.weight(.medium))
+                    .frame(width: DS.minTapTarget, height: DS.minTapTarget)
             }
             .buttonStyle(.glass)
             .disabled(!(editor?.canUndo ?? false))
@@ -855,8 +890,8 @@ struct StickerEditorView: View {
                 hasCommittedChange = true
             } label: {
                 Image(systemName: "arrow.uturn.forward")
-                    .font(.system(size: 18, weight: .medium))
-                    .frame(width: 44, height: 44)
+                    .font(.body.weight(.medium))
+                    .frame(width: DS.minTapTarget, height: DS.minTapTarget)
             }
             .buttonStyle(.glass)
             .disabled(!(editor?.canRedo ?? false))
@@ -867,7 +902,7 @@ struct StickerEditorView: View {
             Button("Apply") { apply() }
                 .buttonStyle(.glassProminent)
                 .disabled(!hasEdits || isSaving)
-                .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                .frame(minWidth: DS.minTapTarget, minHeight: DS.minTapTarget, alignment: .trailing)
                 .accessibilityLabel("Apply changes")
         }
         .font(.body)
@@ -923,32 +958,34 @@ struct StickerEditorView: View {
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
 
-            VStack(spacing: 12) {
+            VStack(spacing: DS.Space.md) {
                 ProgressView()
                     .controlSize(.large)
                     .tint(.white)
 
                 Text(title)
-                    .font(.subheadline.weight(.medium))
+                    .font(DS.TextRole.supporting.weight(.medium))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
 
                 if let subtitle {
                     Text(subtitle)
-                        .font(.caption2)
+                        .font(DS.TextRole.caption)
                         .foregroundStyle(.white.opacity(0.75))
                         .multilineTextAlignment(.center)
                 }
             }
-            .padding(.horizontal, 26)
-            .padding(.vertical, 22)
+            .padding(.horizontal, DS.Space.xxl)
+            .padding(.vertical, DS.Space.xl)
             .frame(maxWidth: 260)
             .background(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
                     .fill(Color.black.opacity(0.72))
             )
         }
         .transition(.opacity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
     }
 
     /// `StickerCreationStage.label` already carries the exact copy and the
@@ -1023,6 +1060,7 @@ struct StickerEditorView: View {
                         }
                     }
                 }.value
+                successPulse += 1
                 onDone(sticker)
                 dismiss()
             } catch {
@@ -1143,3 +1181,34 @@ private struct CheckerboardView: View {
         }
     }
 }
+
+// MARK: - Previews
+
+private func previewEditorSource() -> StickerSource {
+    .image(fileName: "preview.jpg")
+}
+
+#Preview("Light") {
+    StickerEditorView(source: previewEditorSource()) { _ in }
+}
+
+#Preview("Dark") {
+    StickerEditorView(source: previewEditorSource()) { _ in }
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    StickerEditorView(source: previewEditorSource()) { _ in }
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    StickerEditorView(source: previewEditorSource()) { _ in }
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    StickerEditorView(source: previewEditorSource()) { _ in }
+        .frame(width: 430, height: 932)
+}
+
