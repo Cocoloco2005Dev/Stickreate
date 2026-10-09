@@ -13,6 +13,7 @@ struct ExportSheet: View {
     let packID: UUID
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isExported = false
     @State private var errorMessage: String?
@@ -27,13 +28,21 @@ struct ExportSheet: View {
         NavigationStack {
             Group {
                 if let pack {
-                    ScrollView {
-                        VStack(spacing: 24) {
-                            header(pack)
-                            preview(pack)
-                            actions(pack)
+                    if pack.stickers.isEmpty {
+                        EmptyState(
+                            symbol: "photo.badge.plus",
+                            title: "No Stickers to Add",
+                            message: "Add stickers to this pack, then come back to add it to WhatsApp."
+                        )
+                    } else {
+                        ScrollView {
+                            VStack(spacing: DS.Space.xxl) {
+                                header(pack)
+                                preview(pack)
+                                actions(pack)
+                            }
+                            .padding(DS.Space.xxl)
                         }
-                        .padding(24)
                     }
                 }
             }
@@ -49,6 +58,8 @@ struct ExportSheet: View {
             StickerPreviewSheet(item: item)
         }
         .presentationDetents([.medium, .large], selection: $detent)
+        .haptic(.success, trigger: isExported)
+        .haptic(.error, trigger: errorMessage)
         .alert(
             "Couldn't add pack",
             isPresented: Binding(
@@ -66,8 +77,8 @@ struct ExportSheet: View {
     /// read-only preview.
     private func preview(_ pack: StickerPack) -> some View {
         LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
-            spacing: 8
+            columns: Array(repeating: GridItem(.flexible(), spacing: DS.Space.sm), count: 3),
+            spacing: DS.Space.sm
         ) {
             ForEach(Array(pack.stickers.enumerated()), id: \.element.id) { index, item in
                 Button {
@@ -83,42 +94,43 @@ struct ExportSheet: View {
     }
 
     private func stickerThumbnail(_ item: StickerItem) -> some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        RoundedRectangle(cornerRadius: DS.Radius.thumb, style: .continuous)
+            .fill(DS.ColorRole.contentSurface)
             .aspectRatio(1, contentMode: .fit)
             .overlay {
                 if let image = UIImage(data: item.previewData) {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
-                        .padding(4)
+                        .padding(DS.Space.xs)
                 } else {
                     Image(systemName: "photo")
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
             }
             .overlay(alignment: .bottomTrailing) {
                 if item.kind == .animated {
                     Image(systemName: "play.fill")
-                        .font(.caption2.weight(.bold))
+                        .font(DS.TextRole.badge)
                         .foregroundStyle(.white)
                         .padding(5)
-                        .background(.black.opacity(0.45), in: Circle())
-                        .padding(6)
+                        .background(DS.ColorRole.mediaScrim, in: Circle())
+                        .padding(DS.Space.sm)
                         .accessibilityHidden(true)
                 }
             }
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.thumb, style: .continuous))
     }
 
     private func header(_ pack: StickerPack) -> some View {
-        VStack(spacing: 4) {
+        VStack(spacing: DS.Space.xs) {
             Text(pack.name)
-                .font(.headline)
+                .font(DS.TextRole.cardTitle)
                 .lineLimit(1)
 
             Text(statusLine(pack))
-                .font(.subheadline)
+                .font(DS.TextRole.supporting)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -144,12 +156,12 @@ struct ExportSheet: View {
 
     @MainActor
     private var mixedNotice: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DS.Space.md) {
             Label("This pack mixes photos and videos", systemImage: "exclamationmark.triangle")
-                .font(.subheadline.weight(.semibold))
+                .font(DS.TextRole.supporting.weight(.semibold))
 
             Text("WhatsApp imports one kind per pack. Remove the stickers that don't belong, or use Export Pack File from the pack menu to back it up.")
-                .font(.footnote)
+                .font(DS.TextRole.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -158,32 +170,23 @@ struct ExportSheet: View {
 
     @MainActor
     private func singleAction(_ pack: StickerPack) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DS.Space.md) {
             if isExported {
-                addedLabel("Added to WhatsApp")
+                SuccessLabel(title: "Added to WhatsApp")
+                    .transition(.opacity.combined(with: .scale))
             } else {
                 Button {
                     export(pack)
                 } label: {
                     Label("Add to WhatsApp", systemImage: "plus.message")
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, DS.Space.xs)
                 }
                 .buttonStyle(.glassProminent)
-                .tint(.green)
-                .disabled(pack.stickers.isEmpty)
             }
 
             whatsAppFootnote
         }
-    }
-
-    private func addedLabel(_ title: String) -> some View {
-        Label(title, systemImage: "checkmark.circle.fill")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.green)
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel(title)
     }
 
     @MainActor
@@ -191,7 +194,7 @@ struct ExportSheet: View {
     private var whatsAppFootnote: some View {
         if !isWhatsAppInstalled {
             Text("If WhatsApp doesn't open, open it once and try again.")
-                .font(.footnote)
+                .font(DS.TextRole.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -207,7 +210,7 @@ struct ExportSheet: View {
                 publisher: pack.publisher,
                 identifier: pack.id.uuidString
             )
-            withAnimation { isExported = true }
+            withAnimation(reduceMotion ? nil : DS.Motion.quick) { isExported = true }
 
             Task {
                 try? await Task.sleep(nanoseconds: 1_200_000_000)
@@ -219,12 +222,49 @@ struct ExportSheet: View {
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+private func exportPreviewStore() -> (PackStore, UUID) {
     let store = PackStore()
     let stickers = (0..<6).map { _ in
         StickerItem(kind: .static, stickerData: Data(), previewData: Data())
     }
     let pack = StickerPack(name: "Cats", stickers: stickers)
     store.importPack(pack)
-    return ExportSheet(store: store, packID: pack.id)
+    return (store, pack.id)
+}
+
+#Preview("Light") {
+    let (store, id) = exportPreviewStore()
+    return ExportSheet(store: store, packID: id)
+}
+
+#Preview("Dark") {
+    let (store, id) = exportPreviewStore()
+    return ExportSheet(store: store, packID: id)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    let (store, id) = exportPreviewStore()
+    return ExportSheet(store: store, packID: id)
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    let (store, id) = exportPreviewStore()
+    return ExportSheet(store: store, packID: id)
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    let (store, id) = exportPreviewStore()
+    return ExportSheet(store: store, packID: id)
+        .frame(width: 430, height: 932)
+}
+
+#Preview("Reduce Transparency") {
+    let (store, id) = exportPreviewStore()
+    return ExportSheet(store: store, packID: id)
+        .environment(\.accessibilityReduceTransparency, true)
 }

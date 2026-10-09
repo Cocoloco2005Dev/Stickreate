@@ -15,6 +15,8 @@ struct RootView: View {
     @State private var incoming: IncomingMedia?
     @State private var importError: String?
     @State private var store = PackStore.shared
+    @State private var successPulse = 0
+    @State private var errorPulse = 0
 
     /// Wrapper so `.sheet(item:)` can present a received media source.
     private struct IncomingMedia: Identifiable {
@@ -46,6 +48,8 @@ struct RootView: View {
             Text(store.persistenceError ?? "")
         }
         .tabBarMinimizeBehavior(.onScrollDown)
+        .haptic(.success, trigger: successPulse)
+        .haptic(.error, trigger: errorPulse)
         .onOpenURL { url in
             handleIncoming(url)
         }
@@ -77,11 +81,15 @@ struct RootView: View {
         Task {
             do {
                 let source = try await StickerSourceStore.importFile(at: url)
-                await MainActor.run { incoming = IncomingMedia(source: source) }
+                await MainActor.run {
+                    incoming = IncomingMedia(source: source)
+                    successPulse += 1
+                }
             } catch {
                 await MainActor.run {
                     importError = (error as? LocalizedError)?.errorDescription
                         ?? error.localizedDescription
+                    errorPulse += 1
                 }
             }
         }
@@ -95,13 +103,42 @@ struct RootView: View {
             let pack = try PackArchive.importPack(from: data)
             PackStore.shared.importPack(pack)
             selection = .packs
+            successPulse += 1
         } catch {
             importError = (error as? LocalizedError)?.errorDescription
                 ?? error.localizedDescription
+            errorPulse += 1
         }
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+#Preview("Light") {
     RootView()
+}
+
+#Preview("Dark") {
+    RootView()
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    RootView()
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    RootView()
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    RootView()
+        .frame(width: 430, height: 932)
+}
+
+#Preview("Reduce Transparency") {
+    RootView()
+        .environment(\.accessibilityReduceTransparency, true)
 }

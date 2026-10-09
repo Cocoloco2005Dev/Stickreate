@@ -10,6 +10,7 @@ struct FolderPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var text: String
+    @State private var savePulse = 0
 
     init(currentFolder: String?, folders: [String], onSave: @escaping (String?) -> Void) {
         self.currentFolder = currentFolder
@@ -43,12 +44,15 @@ struct FolderPickerSheet: View {
                                     Spacer()
                                     if text == folder {
                                         Image(systemName: "checkmark")
-                                            .foregroundStyle(Color.accentColor)
+                                            .foregroundStyle(DS.ColorRole.accent)
                                     }
                                 }
+                                .frame(minHeight: DS.minTapTarget, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Use folder \(folder)")
+                            .accessibilityAddTraits(text == folder ? .isSelected : [])
                         }
                     }
                 }
@@ -70,6 +74,7 @@ struct FolderPickerSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
+                        savePulse += 1
                         onSave(trimmed)
                         dismiss()
                     }
@@ -78,9 +83,32 @@ struct FolderPickerSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .haptic(.success, trigger: savePulse)
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+#Preview("Light") {
     FolderPickerSheet(currentFolder: "Cats", folders: ["Cats", "Dogs"]) { _ in }
+}
+
+#Preview("Dark") {
+    FolderPickerSheet(currentFolder: "Cats", folders: ["Cats", "Dogs"]) { _ in }
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    FolderPickerSheet(currentFolder: "Cats", folders: ["Cats", "Dogs"]) { _ in }
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    FolderPickerSheet(currentFolder: "Cats", folders: ["Cats", "Dogs"]) { _ in }
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    FolderPickerSheet(currentFolder: "Cats", folders: ["Cats", "Dogs"]) { _ in }
+        .frame(width: 430, height: 932)
 }

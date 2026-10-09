@@ -21,10 +21,11 @@ enum StickerEncoder {
     /// aim just under it so we can keep as many frames as possible.
     private static let animatedByteBudget = 480 * 1024
 
-    /// Short quality ladder (libwebp 0...100). The full frame set is tried at
-    /// ~80 first; only if it exceeds the budget do we try 60, then 40. No long
-    /// walk — keep the frames, drop quality.
-    private static let animatedQualities: [Float] = [80, 60, 40]
+    /// Quality ladder (libwebp 0...100). The full frame set is tried at ~80
+    /// first; only if it exceeds the budget do we step down. The last step (25)
+    /// is the last resort for motion-heavy clips — without it a noisy 10 s clip
+    /// could exceed the budget at every attempt and hard-fail.
+    private static let animatedQualities: [Float] = [80, 60, 40, 25]
 
     /// libwebp animated method. Method 4 is the fast default; the native encoder
     /// already exploits inter-frame redundancy, so an expensive method is not
@@ -41,9 +42,11 @@ enum StickerEncoder {
     ///
     /// Quality first: the full frame set is walked down the whole quality ladder
     /// before ANY frames are dropped. Only if the lowest quality still exceeds
-    /// the budget are frames dropped — gently, keeping ~75% then ~50%, never
-    /// below `minFramesAfterDrop` (or half the set, whichever is larger). Falls
-    /// back to the per-frame static encoder only when the C encoder itself fails.
+    /// the budget are frames dropped — gently at first (~75%, ~50%, then the
+    /// `minFramesAfterDrop` floor), and as a last resort down to two frames, so a
+    /// motion-heavy clip yields a sticker instead of hard-failing. The first
+    /// attempt that fits the budget is returned. Falls back to the per-frame
+    /// static encoder only when the C encoder itself fails.
     ///
     /// The canvas stays exactly 512×512 (a WhatsApp requirement — dimensions are
     /// never reduced). Requires at least two frames; one frame is not a valid
@@ -64,17 +67,23 @@ enum StickerEncoder {
         onProgress: ((Double) -> Void)? = nil
     ) -> Data? {
         guard frames.count >= 2 else { return nil }
+        #if DEBUG
+        // Estimated source-set cost, captured before `frames` is released so the
+        // peak log can report the pre-release upper bound.
+        let sourceBytes = rgbaBytes(frames)
+        #endif
         // Build the resident canvas set ONCE. `prepare` passes through any frame
         // that is already a 512×512 upright canvas (no new pixel buffer), and
-        // this function keeps no reference to `frames` past this point, so only
-        // the prepared set stays resident across the encode ladder.
+        // this function keeps no reference to `frames` past this point, so the
+        // source set can be released (Release ARC) before the encode ladder and
+        // only the prepared set stays resident across it.
         let prepared = prepare(frames)
         guard prepared.count >= 2 else { return nil }
 
         let budget = byteBudget ?? animatedByteBudget
 
         #if DEBUG
-        logPreparedBudget(prepared)
+        logPreparedBudget(prepared, sourceBytes: sourceBytes)
         #endif
 
         let loop = max(0, loopCount)
@@ -138,7 +147,7 @@ enum StickerEncoder {
 
         #if DEBUG
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
-        print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms (kept ≥ \(minFramesAfterDrop) frames)")
+        print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms (exhausted quality + frame ladder)")
         #endif
         // No `onProgress?(1.0)` here: a failed encode must never look finished.
         // In-flight progress is capped at 0.999 by `report`; the thrown
@@ -268,18 +277,26 @@ enum StickerEncoder {
     }
 
     #if DEBUG
-    /// Estimates the resident RGBA cost of the prepared frame set
-    /// (`width × height × 4 bytes × frame count`) so device runs can confirm the
-    /// single-set budget.
-    private static func logPreparedBudget(_ frames: [Frame]) {
-        let bytes = frames.reduce(0) { total, frame in
+    /// RGBA byte estimate for a frame set (`width × height × 4 bytes × count`).
+    private static func rgbaBytes(_ frames: [Frame]) -> Int {
+        frames.reduce(0) { total, frame in
             let width = Int((frame.image.size.width * frame.image.scale).rounded())
             let height = Int((frame.image.size.height * frame.image.scale).rounded())
             return total + width * height * 4
         }
+    }
+
+    /// Logs the prepared frame-set cost and the pre-release peak upper bound
+    /// (`source + prepared`; pass-through frames share pixels, so the real peak is
+    /// ≤ this) so device runs can confirm the single-set budget.
+    private static func logPreparedBudget(_ frames: [Frame], sourceBytes: Int) {
+        let preparedBytes = rgbaBytes(frames)
         print(String(
-            format: "[StickerEncoder] prepared %d frames ≈ %.1f MB RGBA (w*h*4*count)",
-            frames.count, Double(bytes) / 1_048_576
+            format: "[StickerEncoder] prepared %d frames ≈ %.1f MB RGBA; peak ≤ %.1f MB (source %.1f + prepared)",
+            frames.count,
+            Double(preparedBytes) / 1_048_576,
+            Double(sourceBytes + preparedBytes) / 1_048_576,
+            Double(sourceBytes) / 1_048_576
         ))
     }
     #endif
@@ -308,14 +325,17 @@ enum StickerEncoder {
         return result
     }
 
-    /// Frame count the size-budget ladder must never drop below. Drops are
-    /// gentle — keep ~75%, then ~50% — but never below this (or half the set,
-    /// whichever is larger), so a video never loses its motion. The hard floor
-    /// of 2 still applies upstream (a valid animation needs ≥ 2).
+    /// Frame count the size-budget ladder must never drop below for normal clips.
+    /// Drops are gentle — keep ~75%, then ~50% — but never below this (or half
+    /// the set, whichever is larger), so a video never loses its motion. The hard
+    /// floor of 2 still applies upstream (a valid animation needs ≥ 2).
     private static let minFramesAfterDrop = 24
 
-    /// Gentle frame-drop ladder: ~75%, then ~50%, then the floor. Empty when the
-    /// set is already at or below the floor (then only the full set is used).
+    /// Frame-drop ladder: ~75%, then ~50%, then the gentle floor, then a set of
+    /// aggressively small last-resort sizes (still ≥ the hard floor of 2). Empty
+    /// only when the set is too small to downsample. The last-resort sizes matter
+    /// for motion-heavy clips that exceed the budget at every quality: two frames
+    /// is still a valid animation, and `resample` preserves the total duration.
     private static func frameLadder(_ frames: [Frame]) -> [[Frame]] {
         let count = frames.count
         guard count > 2 else { return [] }
@@ -324,8 +344,12 @@ enum StickerEncoder {
         counts.insert(Int((Double(count) * 0.75).rounded()))
         counts.insert(max(floor, Int((Double(count) * 0.5).rounded())))
         counts.insert(floor)
+        // Last resort, below the gentle floor: degrade in steps instead of
+        // jumping straight to two frames, and never give up while a valid
+        // two-frame animation could still fit.
+        counts.formUnion([48, 24, 12, 8, 4, 2])
         let valid = counts
-            .filter { $0 >= max(2, floor) && $0 < count }
+            .filter { $0 >= 2 && $0 < count }
             .sorted(by: >)
         return valid.map { resample(frames, to: $0) }
     }

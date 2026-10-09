@@ -11,6 +11,7 @@ struct EmojiPickerSheet: View {
 
     @State private var selected: [String]
     @State private var custom = ""
+    @State private var savePulse = 0
 
     init(initialEmojis: [String], onSave: @escaping ([String]) -> Void) {
         self.onSave = onSave
@@ -26,7 +27,7 @@ struct EmojiPickerSheet: View {
         "🐶", "🐱", "🦊", "🐻", "🐼", "🐨", "🦁", "🐯"
     ]
 
-    private let paletteColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 6)
+    private let paletteColumns = Array(repeating: GridItem(.flexible(), spacing: DS.Space.sm), count: 6)
 
     private var canAddCustom: Bool {
         let trimmed = custom.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -38,12 +39,12 @@ struct EmojiPickerSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: DS.Space.xl) {
                     selectedSection
                     paletteSection
                     customSection
                 }
-                .padding(20)
+                .padding(DS.Space.xl)
             }
             .navigationTitle("Emojis")
             .navigationBarTitleDisplayMode(.inline)
@@ -53,6 +54,7 @@ struct EmojiPickerSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
+                        savePulse += 1
                         onSave(selected)
                         dismiss()
                     }
@@ -60,26 +62,27 @@ struct EmojiPickerSheet: View {
                 }
             }
         }
+        .haptic(.success, trigger: savePulse)
     }
 
     // MARK: - Sections
 
     private var selectedSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
             Text("Selected \(selected.count) of \(Limits.maxEmojisPerSticker)")
-                .font(.subheadline.weight(.semibold))
+                .font(DS.TextRole.supporting.weight(.semibold))
 
-            HStack(spacing: 8) {
+            HStack(spacing: DS.Space.sm) {
                 ForEach(selected, id: \.self) { emoji in
                     Button {
                         remove(emoji)
                     } label: {
                         Text(emoji)
                             .font(.largeTitle)
-                            .frame(width: 44, height: 44)
+                            .frame(width: DS.minTapTarget, height: DS.minTapTarget)
                             .background(
-                                Color(uiColor: .secondarySystemBackground),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                DS.ColorRole.contentSurface,
+                                in: RoundedRectangle(cornerRadius: DS.Radius.thumb, style: .continuous)
                             )
                     }
                     .buttonStyle(.plain)
@@ -88,22 +91,22 @@ struct EmojiPickerSheet: View {
 
                 if selected.isEmpty {
                     Text("No emojis yet")
-                        .font(.footnote)
+                        .font(DS.TextRole.footnote)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer(minLength: 0)
             }
-            .frame(minHeight: 44)
+            .frame(minHeight: DS.minTapTarget)
         }
     }
 
     private var paletteSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
             Text("Common")
-                .font(.subheadline.weight(.semibold))
+                .font(DS.TextRole.supporting.weight(.semibold))
 
-            LazyVGrid(columns: paletteColumns, spacing: 8) {
+            LazyVGrid(columns: paletteColumns, spacing: DS.Space.sm) {
                 ForEach(Self.palette, id: \.self) { emoji in
                     let isSelected = selected.contains(emoji)
                     Button {
@@ -111,27 +114,28 @@ struct EmojiPickerSheet: View {
                     } label: {
                         Text(emoji)
                             .font(.title2)
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .frame(maxWidth: .infinity, minHeight: DS.minTapTarget)
                             .background(
                                 isSelected
-                                    ? Color.accentColor.opacity(0.25)
-                                    : Color(uiColor: .secondarySystemBackground),
-                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    ? DS.ColorRole.accent.opacity(0.25)
+                                    : DS.ColorRole.contentSurface,
+                                in: RoundedRectangle(cornerRadius: DS.Radius.badge, style: .continuous)
                             )
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(isSelected ? "Remove \(emoji)" : "Add \(emoji)")
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
         }
     }
 
     private var customSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
             Text("Type your own")
-                .font(.subheadline.weight(.semibold))
+                .font(DS.TextRole.supporting.weight(.semibold))
 
-            HStack(spacing: 12) {
+            HStack(spacing: DS.Space.md) {
                 TextField("Emoji", text: $custom)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { addCustom() }
@@ -167,6 +171,28 @@ struct EmojiPickerSheet: View {
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+#Preview("Light") {
     EmojiPickerSheet(initialEmojis: ["😺", "🔥"]) { _ in }
+}
+
+#Preview("Dark") {
+    EmojiPickerSheet(initialEmojis: ["😺", "🔥"]) { _ in }
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    EmojiPickerSheet(initialEmojis: ["😺", "🔥"]) { _ in }
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    EmojiPickerSheet(initialEmojis: ["😺", "🔥"]) { _ in }
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    EmojiPickerSheet(initialEmojis: ["😺", "🔥"]) { _ in }
+        .frame(width: 430, height: 932)
 }

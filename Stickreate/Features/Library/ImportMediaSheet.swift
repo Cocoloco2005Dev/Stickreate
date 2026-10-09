@@ -77,9 +77,7 @@ struct ImportMediaSheet: View {
         NavigationStack {
             Group {
                 if isBusy {
-                    ProgressView("Preparing…")
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    LoadingState(title: "Preparing…")
                 } else if store.packs.isEmpty {
                     emptyState
                 } else {
@@ -95,6 +93,9 @@ struct ImportMediaSheet: View {
         .sheet(item: $editorTask, onDismiss: editorDismissed) { task in
             editor(for: task)
         }
+        .haptic(.selection, trigger: selectedPackID)
+        .haptic(.success, trigger: didAdd)
+        .haptic(.error, trigger: errorMessage)
         .alert(
             "Something went wrong",
             isPresented: Binding(
@@ -115,7 +116,6 @@ struct ImportMediaSheet: View {
         ToolbarItem(placement: .cancellationAction) {
             Button("Cancel") { onDone() }
                 .disabled(isBusy)
-                .tint(Color.accentColor)
         }
 
         if let pack = selectedPack {
@@ -132,16 +132,16 @@ struct ImportMediaSheet: View {
     // MARK: - Empty state
 
     private var emptyState: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: DS.Space.xl) {
             mediaRow
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
+                .padding(.horizontal, DS.Space.xl)
+                .padding(.top, DS.Space.sm)
 
-            ContentUnavailableView {
-                Label("No Packs Yet", systemImage: "square.grid.2x2")
-            } description: {
-                Text("Create a pack to add this \(mediaTypeLabel.lowercased()) to.")
-            } actions: {
+            EmptyState(
+                symbol: "square.grid.2x2",
+                title: "No Packs Yet",
+                message: "Create a pack to add this \(mediaTypeLabel.lowercased()) to."
+            ) {
                 Button("New Pack", systemImage: "plus") {
                     createPack()
                 }
@@ -168,34 +168,34 @@ struct ImportMediaSheet: View {
                 } label: {
                     Label("New Pack", systemImage: "plus")
                 }
-                .accessibilityLabel("Create a new pack")
+                .accessibilityHint("Creates a new pack and selects it")
             }
         }
     }
 
     private var mediaRow: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: DS.Space.md) {
             mediaThumb
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: DS.Space.xxs) {
                 Text(mediaTypeLabel)
-                    .font(.headline)
+                    .font(DS.TextRole.cardTitle)
 
                 Text("Choose a pack to add it to.")
-                    .font(.caption)
+                    .font(DS.TextRole.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, DS.Space.xs)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(mediaTypeLabel). Choose a pack to add it to.")
     }
 
     private var mediaThumb: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        RoundedRectangle(cornerRadius: DS.Radius.thumb, style: .continuous)
+            .fill(DS.ColorRole.contentSurface)
             .frame(width: 64, height: 64)
             .overlay {
                 if let previewImage {
@@ -208,7 +208,7 @@ struct ImportMediaSheet: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.thumb, style: .continuous))
             .accessibilityHidden(true)
     }
 
@@ -219,16 +219,16 @@ struct ImportMediaSheet: View {
         return Button {
             selectedPackID = pack.id
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: DS.Space.md) {
                 packThumb(pack)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: DS.Space.xxs) {
                     Text(pack.name)
-                        .font(.headline)
+                        .font(DS.TextRole.cardTitle)
                         .lineLimit(1)
 
                     Text(compatible ? packSummary(pack) : incompatibleReason(pack))
-                        .font(.caption)
+                        .font(DS.TextRole.caption)
                         .foregroundStyle(.secondary)
                 }
 
@@ -237,13 +237,16 @@ struct ImportMediaSheet: View {
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.title3)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(DS.ColorRole.accent)
+                        .accessibilityHidden(true)
                 } else if !compatible {
                     Image(systemName: "nosign")
                         .font(.title3)
                         .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
             }
+            .frame(minHeight: DS.minTapTarget, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -254,18 +257,18 @@ struct ImportMediaSheet: View {
     }
 
     private func packThumb(_ pack: StickerPack) -> some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        RoundedRectangle(cornerRadius: DS.Radius.badge, style: .continuous)
+            .fill(DS.ColorRole.contentSurface)
             .frame(width: 48, height: 48)
             .overlay {
                 if let data = pack.traySourcePreview, let image = UIImage(data: data) {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFit()
-                        .padding(4)
+                        .padding(DS.Space.xs)
                 } else {
                     Image(systemName: "square.grid.2x2")
-                        .font(.caption)
+                        .font(DS.TextRole.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -383,10 +386,48 @@ struct ImportMediaSheet: View {
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+#Preview("Light") {
     ImportMediaSheet(
         source: .image(fileName: "preview.jpg"),
         store: PackStore(),
         onDone: {}
     )
+}
+
+#Preview("Dark") {
+    ImportMediaSheet(
+        source: .image(fileName: "preview.jpg"),
+        store: PackStore(),
+        onDone: {}
+    )
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    ImportMediaSheet(
+        source: .image(fileName: "preview.jpg"),
+        store: PackStore(),
+        onDone: {}
+    )
+    .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    ImportMediaSheet(
+        source: .image(fileName: "preview.jpg"),
+        store: PackStore(),
+        onDone: {}
+    )
+    .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    ImportMediaSheet(
+        source: .image(fileName: "preview.jpg"),
+        store: PackStore(),
+        onDone: {}
+    )
+    .frame(width: 430, height: 932)
 }

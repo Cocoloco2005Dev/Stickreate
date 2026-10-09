@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Editor for one pack. A numbered slot grid with per-tile menus, drag to
 /// reorder, and edit/emoji/cover/duplicate/delete actions. The grid is content
-/// layer; the single prominent action is the empty state's "Add Sticker".
+/// layer; the single prominent action is the empty state's "Add Sticker" (or the
+/// export action once the pack is exportable).
 struct PackEditorView: View {
     let store: PackStore
     let packID: UUID
@@ -21,6 +22,10 @@ struct PackEditorView: View {
 
     @State private var showingFolder = false
     @State private var shareItem: ShareItem?
+
+    @State private var selectionPulse = 0
+    @State private var impactPulse = 0
+    @State private var errorPulse = 0
 
     /// Deferred so it can run after the large preview sheet closes.
     private enum PreviewAction {
@@ -54,7 +59,7 @@ struct PackEditorView: View {
         }
     }
 
-    private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 104), spacing: DS.Space.md)]
 
     private var pack: StickerPack? { store.pack(with: packID) }
 
@@ -91,8 +96,8 @@ struct PackEditorView: View {
                     canDuplicate: (pack?.stickers.count ?? 0) < Limits.maxStickers,
                     onEdit: { pendingPreviewAction = .edit(item) },
                     onEmojis: { pendingPreviewAction = .emojis(item) },
-                    onSetCover: { store.setCover(item.id, in: packID) },
-                    onDuplicate: { store.duplicateSticker(item.id, in: packID) },
+                    onSetCover: { setCover(item) },
+                    onDuplicate: { duplicate(item) },
                     onDelete: { pendingPreviewAction = .delete(item) }
                 )
             }
@@ -114,6 +119,9 @@ struct PackEditorView: View {
             } message: {
                 alertMessage
             }
+            .haptic(.selection, trigger: selectionPulse)
+            .haptic(.impact, trigger: impactPulse)
+            .haptic(.error, trigger: errorPulse)
     }
 
     // MARK: - Content
@@ -127,17 +135,26 @@ struct PackEditorView: View {
                 grid(for: pack)
             }
         } else {
-            Color.clear
-                .onAppear { dismiss() }
+            // The pack was removed (e.g. deleted from the library). Show a
+            // recoverable state for the single frame before popping.
+            EmptyState(
+                symbol: "questionmark.folder",
+                title: "Pack Not Found",
+                message: "This pack was removed."
+            ) {
+                Button("Back") { dismiss() }
+                    .buttonStyle(.glassProminent)
+            }
+            .onAppear { dismiss() }
         }
     }
 
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("No Stickers Yet", systemImage: "photo.badge.plus")
-        } description: {
-            Text("Add at least \(Limits.minStickers) stickers to make this pack WhatsApp-ready.")
-        } actions: {
+        EmptyState(
+            symbol: "photo.badge.plus",
+            title: "No Stickers Yet",
+            message: "Add at least \(Limits.minStickers) stickers to make this pack WhatsApp-ready."
+        ) {
             Button("Add Sticker", systemImage: "plus") {
                 showingAdd = true
             }
@@ -147,12 +164,12 @@ struct PackEditorView: View {
 
     private func grid(for pack: StickerPack) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: DS.Space.lg) {
                 header(for: pack)
 
                 exportAction(for: pack)
 
-                LazyVGrid(columns: columns, spacing: 12) {
+                LazyVGrid(columns: columns, spacing: DS.Space.md) {
                     ForEach(pack.stickers) { item in
                         let index = pack.stickers.firstIndex(of: item) ?? 0
 
@@ -185,19 +202,19 @@ struct PackEditorView: View {
 
                 footer(for: pack)
             }
-            .padding(16)
+            .padding(DS.Space.lg)
         }
     }
 
     private func header(for pack: StickerPack) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            HStack(spacing: DS.Space.sm) {
                 Label(kindLabel(for: pack), systemImage: kindSymbol(for: pack))
                 Spacer()
                 Text("\(pack.stickers.count) of \(Limits.maxStickers)")
             }
         }
-        .font(.subheadline)
+        .font(DS.TextRole.supporting)
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
     }
@@ -216,7 +233,7 @@ struct PackEditorView: View {
 
     /// Subtle footer so the screen doesn't end in a void below a short grid.
     private func footer(for pack: StickerPack) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
             Label("The first sticker is the pack's cover", systemImage: "star")
 
             if let folder = pack.folder {
@@ -227,10 +244,10 @@ struct PackEditorView: View {
                 Label("Ready to add to WhatsApp", systemImage: "checkmark.seal")
             }
         }
-        .font(.footnote)
+        .font(DS.TextRole.footnote)
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 4)
+        .padding(.top, DS.Space.xs)
     }
 
     // MARK: - Primary export action
@@ -243,14 +260,13 @@ struct PackEditorView: View {
             } label: {
                 Label("Add to WhatsApp", systemImage: "plus.message")
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
+                    .padding(.vertical, DS.Space.xs)
             }
             .buttonStyle(.glassProminent)
-            .tint(.green)
             .accessibilityHint("Opens the WhatsApp sticker import")
         } else {
             Label(exportHint(for: pack), systemImage: "info.circle")
-                .font(.footnote)
+                .font(DS.TextRole.footnote)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel(exportHint(for: pack))
@@ -297,12 +313,12 @@ struct PackEditorView: View {
         }
 
         Button("Set as Cover", systemImage: "star") {
-            store.setCover(item.id, in: packID)
+            setCover(item)
         }
         .disabled(isCover)
 
         Button("Duplicate", systemImage: "plus.square.on.square") {
-            store.duplicateSticker(item.id, in: packID)
+            duplicate(item)
         }
         .disabled((pack?.stickers.count ?? 0) >= Limits.maxStickers)
 
@@ -311,6 +327,16 @@ struct PackEditorView: View {
         Button("Delete", systemImage: "trash", role: .destructive) {
             activeAlert = .deleteSticker(item)
         }
+    }
+
+    private func setCover(_ item: StickerItem) {
+        store.setCover(item.id, in: packID)
+        selectionPulse += 1
+    }
+
+    private func duplicate(_ item: StickerItem) {
+        store.duplicateSticker(item.id, in: packID)
+        selectionPulse += 1
     }
 
     private func reorder(payloads: [String], onto target: StickerItem) -> Bool {
@@ -323,6 +349,7 @@ struct PackEditorView: View {
 
         let destination = from < to ? to + 1 : to
         store.moveStickers(in: packID, fromOffsets: IndexSet(integer: from), toOffset: destination)
+        impactPulse += 1
         return true
     }
 
@@ -368,7 +395,7 @@ struct PackEditorView: View {
                     showingFolder = true
                 }
 
-                // The green button above the grid is the WhatsApp import, so
+                // The prominent button above the grid is the WhatsApp import, so
                 // this menu only carries the `.stickreatepack` backup file.
                 Button("Export Pack File…", systemImage: "square.and.arrow.up") {
                     exportFile()
@@ -460,14 +487,62 @@ struct PackEditorView: View {
             shareItem = ShareItem(url: url)
         } catch {
             activeAlert = .error(error.localizedDescription)
+            errorPulse += 1
         }
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+private func editorPreviewStore() -> (PackStore, UUID) {
     let store = PackStore()
     let pack = store.createPack(named: "Cats")
+    return (store, pack.id)
+}
+
+#Preview("Light") {
+    let (store, id) = editorPreviewStore()
     return NavigationStack {
-        PackEditorView(store: store, packID: pack.id)
+        PackEditorView(store: store, packID: id)
     }
+}
+
+#Preview("Dark") {
+    let (store, id) = editorPreviewStore()
+    return NavigationStack {
+        PackEditorView(store: store, packID: id)
+    }
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    let (store, id) = editorPreviewStore()
+    return NavigationStack {
+        PackEditorView(store: store, packID: id)
+    }
+    .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    let (store, id) = editorPreviewStore()
+    return NavigationStack {
+        PackEditorView(store: store, packID: id)
+    }
+    .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    let (store, id) = editorPreviewStore()
+    return NavigationStack {
+        PackEditorView(store: store, packID: id)
+    }
+    .frame(width: 430, height: 932)
+}
+
+#Preview("Reduce Transparency") {
+    let (store, id) = editorPreviewStore()
+    return NavigationStack {
+        PackEditorView(store: store, packID: id)
+    }
+    .environment(\.accessibilityReduceTransparency, true)
 }

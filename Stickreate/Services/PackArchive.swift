@@ -10,9 +10,12 @@ import ZIPFoundation
 /// read theirs. The legacy proprietary `.stickreatepack` JSON is still
 /// importable for backward compatibility.
 enum PackArchive {
-    enum Failure: LocalizedError {
+    enum Failure: LocalizedError, Equatable {
         case invalid
         case unsupportedVersion
+        case tooManyStickers
+        case mixedKinds
+        case payloadTooLarge
         case failed(String)
 
         var errorDescription: String? {
@@ -21,6 +24,12 @@ enum PackArchive {
                 "This isn't a valid sticker pack file."
             case .unsupportedVersion:
                 "This pack was made with a newer version of Stickreate."
+            case .tooManyStickers:
+                "This pack has too many stickers (WhatsApp allows up to \(Limits.maxStickers))."
+            case .mixedKinds:
+                "This pack mixes static and animated stickers, which WhatsApp can't import."
+            case .payloadTooLarge:
+                "This pack is too large to import."
             case .failed(let message):
                 message
             }
@@ -34,6 +43,11 @@ enum PackArchive {
     private static let legacyVersion = 1
     /// ZIP local-file-header magic: "PK".
     private static let zipMagic: [UInt8] = [0x50, 0x4B]
+
+    /// Decompression caps that blunt ZIP-bomb imports: no single entry may
+    /// expand past 1 MB, and no archive past 20 MB total.
+    private static let maxEntryBytes = 1 * 1024 * 1024
+    private static let maxTotalBytes = 20 * 1024 * 1024
 
     // MARK: - Public API
 
@@ -65,20 +79,18 @@ enum PackArchive {
         defer { try? FileManager.default.removeItem(at: temporary) }
 
         do {
-            // Optional so the archive is released (closing/flushing its backing
+            // Scope the archive so it is released (closing/flushing its backing
             // file) before we read the finished ZIP back off disk.
-            var archive: Archive? = try Archive(url: temporary, accessMode: .create)
-            defer { archive = nil }
-
-            try add(archive!, path: "contents.json", data: manifestData, compressed: true)
-            try add(archive!, path: "cover.png", data: cover, compressed: false)
-            for (index, sticker) in pack.stickers.enumerated() {
-                try add(archive!, path: "\(index + 1).webp", data: sticker.stickerData, compressed: false)
+            do {
+                let archive = try Archive(url: temporary, accessMode: .create)
+                try add(archive, path: "contents.json", data: manifestData, compressed: true)
+                try add(archive, path: "cover.png", data: cover, compressed: false)
+                for (index, sticker) in pack.stickers.enumerated() {
+                    try add(archive, path: "\(index + 1).webp", data: sticker.stickerData, compressed: false)
+                }
+                try add(archive, path: "author.txt", data: Data(pack.publisher.utf8), compressed: true)
+                try add(archive, path: "title.txt", data: Data(pack.name.utf8), compressed: true)
             }
-            try add(archive!, path: "author.txt", data: Data(pack.publisher.utf8), compressed: true)
-            try add(archive!, path: "title.txt", data: Data(pack.name.utf8), compressed: true)
-
-            archive = nil
             return try Data(contentsOf: temporary)
         } catch let failure as Failure {
             throw failure
@@ -91,10 +103,20 @@ enum PackArchive {
     /// legacy `.stickreatepack` JSON.
     static func importPack(from data: Data) throws -> StickerPack {
         guard !data.isEmpty else { throw Failure.invalid }
-        if data.starts(with: zipMagic) {
-            return try importZIP(data)
-        }
-        return try importLegacyJSON(data)
+        let pack = data.starts(with: zipMagic)
+            ? try importZIP(data)
+            : try importLegacyJSON(data)
+        try validate(pack)
+        return pack
+    }
+
+    /// Rejects packs the app and WhatsApp can't hold: empty, over the sticker
+    /// cap, or mixing static and animated stickers. The 3-sticker minimum is a
+    /// WhatsApp export rule, not an import rule, so it isn't enforced here.
+    private static func validate(_ pack: StickerPack) throws {
+        if pack.stickers.isEmpty { throw Failure.invalid }
+        if pack.stickers.count > Limits.maxStickers { throw Failure.tooManyStickers }
+        if pack.isMixed { throw Failure.mixedKinds }
     }
 
     /// Writes the archive to a temporary `.wasticker` file for sharing.
@@ -146,6 +168,10 @@ enum PackArchive {
         } catch {
             throw Failure.invalid
         }
+        // Reject a declared-expansion ZIP bomb before extracting anything.
+        let total = archive.reduce(Int64(0)) { $0 + Int64($1.uncompressedSize) }
+        guard total <= Int64(maxTotalBytes) else { throw Failure.payloadTooLarge }
+
         if let manifest = archive["contents.json"] {
             return try importManifest(try read(archive, manifest), archive: archive)
         }
@@ -296,8 +322,15 @@ enum PackArchive {
     }
 
     private static func read(_ archive: Archive, _ entry: Entry) throws -> Data {
+        // Cap both the declared size and the bytes actually produced, so a
+        // lying header can't slip a huge entry through.
+        guard Int64(entry.uncompressedSize) <= Int64(maxEntryBytes) else { throw Failure.payloadTooLarge }
         var data = Data()
-        _ = try archive.extract(entry, consumer: { data.append($0) })
+        _ = try archive.extract(entry, consumer: { chunk in
+            data.append(chunk)
+            if data.count > maxEntryBytes { throw Failure.payloadTooLarge }
+        })
+        guard data.count <= maxEntryBytes else { throw Failure.payloadTooLarge }
         return data
     }
 

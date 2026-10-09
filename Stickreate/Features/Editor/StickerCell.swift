@@ -39,14 +39,14 @@ struct StickerCell<MenuContent: View>: View {
     // MARK: - Filled tile
 
     private func filledTile(_ item: StickerItem) -> some View {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
+            .fill(DS.ColorRole.contentSurface)
             .aspectRatio(1, contentMode: .fit)
             .overlay { preview(for: item) }
             .overlay(alignment: .topLeading) { numberBadge }
             .overlay(alignment: .topTrailing) { trailingBadges(for: item) }
             .overlay(alignment: .bottomLeading) { emojiBadge(for: item) }
-            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
             .onTapGesture { onTap?() }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel(for: item))
@@ -60,44 +60,45 @@ struct StickerCell<MenuContent: View>: View {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFit()
-                .padding(6)
+                .padding(DS.Space.sm)
         } else {
             Image(systemName: "photo")
                 .font(.title3)
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
     }
 
     private var numberBadge: some View {
         Text("\(index + 1)")
-            .font(.caption2.weight(.bold))
+            .font(DS.TextRole.badge)
             .foregroundStyle(.white)
             .padding(5)
-            .background(.black.opacity(0.45), in: Circle())
-            .padding(6)
+            .background(DS.ColorRole.mediaScrim, in: Circle())
+            .padding(DS.Space.sm)
             .accessibilityHidden(true)
     }
 
     private func trailingBadges(for item: StickerItem) -> some View {
-        VStack(alignment: .trailing, spacing: 4) {
+        VStack(alignment: .trailing, spacing: DS.Space.xs) {
             if isCover {
                 Label("Cover", systemImage: "star.fill")
-                    .font(.caption2.weight(.semibold))
+                    .font(DS.TextRole.caption.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(Color.accentColor, in: Capsule())
+                    .background(DS.ColorRole.accent, in: Capsule())
             }
 
             if item.kind == .animated {
                 Image(systemName: "play.fill")
-                    .font(.caption2.weight(.bold))
+                    .font(DS.TextRole.badge)
                     .foregroundStyle(.white)
                     .padding(5)
-                    .background(.black.opacity(0.45), in: Circle())
+                    .background(DS.ColorRole.mediaScrim, in: Circle())
             }
         }
-        .padding(6)
+        .padding(DS.Space.sm)
         .accessibilityHidden(true)
     }
 
@@ -105,11 +106,11 @@ struct StickerCell<MenuContent: View>: View {
     private func emojiBadge(for item: StickerItem) -> some View {
         if !item.emojis.isEmpty {
             Text(item.emojis.prefix(Limits.maxEmojisPerSticker).joined())
-                .font(.caption2)
+                .font(DS.TextRole.caption)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(Color(uiColor: .systemBackground).opacity(0.9), in: Capsule())
-                .padding(6)
+                .background(DS.ColorRole.contentSurfaceRaised.opacity(0.9), in: Capsule())
+                .padding(DS.Space.sm)
                 .accessibilityHidden(true)
         }
     }
@@ -120,24 +121,26 @@ struct StickerCell<MenuContent: View>: View {
         Button {
             onAdd?()
         } label: {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground).opacity(0.35))
+            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
+                .fill(DS.ColorRole.contentSurface.opacity(0.35))
                 .aspectRatio(1, contentMode: .fit)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
                         .strokeBorder(
-                            Color.accentColor.opacity(0.7),
+                            DS.ColorRole.accent.opacity(0.7),
                             style: StrokeStyle(lineWidth: 2, dash: [6, 4])
                         )
                 }
                 .overlay {
                     Image(systemName: "plus")
                         .font(.title2.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(DS.ColorRole.accent)
                 }
+                .frame(minWidth: DS.minTapTarget, minHeight: DS.minTapTarget)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Add sticker")
+        .accessibilityHint("Adds a new sticker to this pack")
     }
 
     private func accessibilityLabel(for item: StickerItem) -> String {
@@ -150,21 +153,51 @@ struct StickerCell<MenuContent: View>: View {
     }
 }
 
-#Preview {
-    let item = StickerItem(
-        kind: .animated,
-        emojis: ["😺"],
-        stickerData: Data(),
-        previewData: Data()
-    )
-    return HStack {
-        StickerCell(item: item, index: 0, isCover: true) {
-            Button("Edit") {}
-        }
-        StickerCell(item: nil, index: 1, isCover: false, onAdd: {}) {
-            EmptyView()
-        }
+// MARK: - Previews
+
+private func previewAnimatedItem() -> StickerItem {
+    StickerItem(kind: .animated, emojis: ["😺"], stickerData: Data(), previewData: Data())
+}
+
+#Preview("Light") {
+    HStack {
+        StickerCell(item: previewAnimatedItem(), index: 0, isCover: true) { Button("Edit") {} }
+        StickerCell(item: nil, index: 1, isCover: false, onAdd: {}) { EmptyView() }
     }
     .frame(width: 240)
     .padding()
+}
+
+#Preview("Dark") {
+    HStack {
+        StickerCell(item: previewAnimatedItem(), index: 0, isCover: true) { Button("Edit") {} }
+        StickerCell(item: nil, index: 1, isCover: false, onAdd: {}) { EmptyView() }
+    }
+    .frame(width: 240)
+    .padding()
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    HStack {
+        StickerCell(item: previewAnimatedItem(), index: 0, isCover: true) { Button("Edit") {} }
+        StickerCell(item: nil, index: 1, isCover: false, onAdd: {}) { EmptyView() }
+    }
+    .frame(width: 240)
+    .padding()
+    .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    StickerCell(item: previewAnimatedItem(), index: 0, isCover: true) { Button("Edit") {} }
+        .frame(width: 160)
+        .padding()
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    StickerCell(item: previewAnimatedItem(), index: 0, isCover: true) { Button("Edit") {} }
+        .frame(width: 200)
+        .padding()
+        .frame(width: 430, height: 932)
 }

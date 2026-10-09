@@ -15,6 +15,49 @@ final class StickerEncoderBudgetTests: XCTestCase {
         }
     }
 
+    /// Incompressible 512×512 RGB noise (deterministic), to exercise the low end
+    /// of the quality/frame ladder.
+    private func noiseImage(seed: UInt64, size: CGFloat = 512) -> UIImage {
+        let width = Int(size)
+        let height = Int(size)
+        var rng = SplitMix64(seed: seed)
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        for offset in stride(from: 0, to: bytes.count, by: 4) {
+            bytes[offset] = UInt8(truncatingIfNeeded: rng.next())
+            bytes[offset + 1] = UInt8(truncatingIfNeeded: rng.next())
+            bytes[offset + 2] = UInt8(truncatingIfNeeded: rng.next())
+        }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let cgImage = CGImage(
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bitsPerPixel: 32,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: false,
+                intent: .defaultIntent
+              ) else {
+            return solidImage(.black, size: size)
+        }
+        return UIImage(cgImage: cgImage)
+    }
+
+    private struct SplitMix64 {
+        var state: UInt64
+        init(seed: UInt64) { state = seed }
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
     func testStaticSolidImageEncodesWithinBudget() {
         let data = StickerEncoder.staticSticker(from: solidImage(.systemRed))
         XCTAssertNotNil(data)
@@ -73,5 +116,25 @@ final class StickerEncoderBudgetTests: XCTestCase {
             prepared[0].image === image,
             "an already-512×512 upright frame must be passed through, not redrawn"
         )
+    }
+
+    /// Motion-heavy input must still produce a valid sticker: the extended ladder
+    /// (quality 25 + last-resort frame counts down to 2) is what rescues it. If it
+    /// genuinely cannot fit, it must at least fail cleanly (no fake 100%).
+    func testNoisyFrameSetStillEncodes() {
+        let frames = (0..<10).map { index in
+            Frame(image: noiseImage(seed: UInt64(index) + 1), duration: 0.1)
+        }
+        var fractions: [Double] = []
+        let data = StickerEncoder.animatedSticker(
+            from: frames,
+            onProgress: { fractions.append($0) }
+        )
+        guard let data else {
+            XCTAssertFalse(fractions.contains(1.0), "a failed noisy encode must never report 1.0")
+            XCTFail("noisy frame set should fit after the extended ladder")
+            return
+        }
+        XCTAssertLessThanOrEqual(data.count, Limits.maxAnimatedBytes)
     }
 }

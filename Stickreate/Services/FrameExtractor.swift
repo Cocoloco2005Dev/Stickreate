@@ -229,12 +229,20 @@ enum FrameExtractor {
         guard total > 0 else { throw Failure.empty }
 
         let step = max(1, Int(ceil(Double(total) / Double(max(1, maxFrames)))))
+        // A kept frame represents `step` source frames; sum their delays so
+        // downsampling preserves the animation length instead of playing fast.
+        // The pure helper keeps this rule unit-testable without a real GIF.
+        let keptDelays = downsampledDelays(
+            baseDelays: (0..<total).map { frameDelay(source: source, index: $0) },
+            step: step
+        )
         var frames: [Frame] = []
         var index = 0
+        var kept = 0
         while index < total {
             let frame = autoreleasepool { () -> Frame? in
                 guard let cgImage = CGImageSourceCreateImageAtIndex(source, index, nil) else { return nil }
-                let delay = max(frameDelay(source: source, index: index), Limits.minFrameDuration)
+                let delay = max(keptDelays[kept], Limits.minFrameDuration)
                 let image = UIImage(cgImage: cgImage).scaled(toMaxDimension: frameMaxDimension)
                 return Frame(image: image, duration: delay)
             }
@@ -242,6 +250,7 @@ enum FrameExtractor {
                 frames.append(frame)
             }
             index += step
+            kept += 1
         }
 
         guard !frames.isEmpty else { throw Failure.empty }
@@ -255,6 +264,25 @@ enum FrameExtractor {
         print(String(format: "[FrameExtractor] gif %d frames in %.0fms", frames.count, ms))
         #endif
         return frames
+    }
+
+    /// Sums the delays of the source frames each kept (downsampled) frame
+    /// represents. Kept frame `k` covers source indices
+    /// `k*step ..< min((k+1)*step, baseDelays.count)`; the final group is short
+    /// when the count isn't a multiple of `step`. Pure (no GIF decoding), so the
+    /// duration-preservation rule is unit-testable on its own. `step <= 1` is the
+    /// identity.
+    static func downsampledDelays(baseDelays: [TimeInterval], step: Int) -> [TimeInterval] {
+        guard step > 1, !baseDelays.isEmpty else { return baseDelays }
+        var result: [TimeInterval] = []
+        result.reserveCapacity((baseDelays.count + step - 1) / step)
+        var index = 0
+        while index < baseDelays.count {
+            let end = min(index + step, baseDelays.count)
+            result.append(baseDelays[index..<end].reduce(0, +))
+            index += step
+        }
+        return result
     }
 
     /// Per-frame GIF delay, preferring the unclamped value. Defaults to 0.1 s.

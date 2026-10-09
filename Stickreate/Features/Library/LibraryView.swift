@@ -14,6 +14,9 @@ struct LibraryView: View {
     @State private var showingImporter = false
     @State private var importedMedia: ImportedMedia?
     @State private var isImportingMedia = false
+    @State private var showingImportedBanner = false
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var activeAlert: ActiveAlert?
     @State private var renameName = ""
@@ -21,7 +24,10 @@ struct LibraryView: View {
     @State private var exportTarget: StickerPack?
     @State private var shareItem: ShareItem?
 
-    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
+    @State private var successPulse = 0
+    @State private var errorPulse = 0
+
+    private let columns = [GridItem(.adaptive(minimum: 150), spacing: DS.Space.lg)]
 
     /// Wrapper so `.sheet(item:)` can present a media source chosen from Files.
     private struct ImportedMedia: Identifiable {
@@ -60,13 +66,21 @@ struct LibraryView: View {
             VStack(spacing: 0) {
                 if !settings.hasSeenOnboarding {
                     onboardingCard
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .padding(.bottom, 4)
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.top, DS.Space.sm)
+                        .padding(.bottom, DS.Space.xs)
+                }
+
+                if showingImportedBanner {
+                    StatusBanner(title: "Pack imported")
+                        .padding(.horizontal, DS.Space.lg)
+                        .padding(.top, DS.Space.sm)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
                 mainContent
             }
+            .animation(reduceMotion ? nil : DS.Motion.standard, value: showingImportedBanner)
             .navigationTitle("Sticker Packs")
             .navigationDestination(for: UUID.self) { id in
                 PackEditorView(store: store, packID: id)
@@ -96,25 +110,21 @@ struct LibraryView: View {
             .sheet(item: $shareItem) { item in
                 ActivityView(url: item.url) { shareItem = nil }
             }
-            .overlay {
-                if isImportingMedia {
-                    ProgressView("Importing…")
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(.ultraThinMaterial)
-                }
-            }
             .alert(alertTitle, isPresented: alertIsPresented) {
                 alertActions
             } message: {
                 alertMessage
             }
+            .haptic(.success, trigger: successPulse)
+            .haptic(.error, trigger: errorPulse)
         }
     }
 
     @ViewBuilder
     private var mainContent: some View {
-        if store.packs.isEmpty {
+        if isImportingMedia {
+            LoadingState(title: "Importing…")
+        } else if store.packs.isEmpty {
             emptyState
         } else if filteredPacks.isEmpty {
             noResultsState
@@ -126,45 +136,46 @@ struct LibraryView: View {
     // MARK: - Onboarding
 
     private var onboardingCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.md) {
+            HStack(alignment: .firstTextBaseline, spacing: DS.Space.sm) {
                 Label("Welcome to Stickreate", systemImage: "sparkles")
-                    .font(.headline)
+                    .font(DS.TextRole.cardTitle)
 
-                Spacer(minLength: 8)
+                Spacer(minLength: DS.Space.sm)
 
                 Button("Got it") {
                     settings.hasSeenOnboarding = true
                 }
-                .font(.subheadline.weight(.semibold))
+                .font(DS.TextRole.supporting.weight(.semibold))
                 .accessibilityLabel("Dismiss the welcome card")
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: DS.Space.sm) {
                 onboardingStep(1, "Create a pack")
                 onboardingStep(2, "Add and edit stickers")
                 onboardingStep(3, "Add to WhatsApp")
             }
         }
-        .padding(16)
+        .padding(DS.Space.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            Color(uiColor: .secondarySystemBackground),
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            DS.ColorRole.contentSurface,
+            in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
         )
         .accessibilityElement(children: .contain)
     }
 
     private func onboardingStep(_ number: Int, _ title: String) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DS.Space.sm) {
             Text("\(number)")
-                .font(.caption.weight(.bold))
+                .font(DS.TextRole.badge)
                 .foregroundStyle(.white)
                 .frame(width: 20, height: 20)
-                .background(Color.accentColor, in: Circle())
+                .background(DS.ColorRole.accent, in: Circle())
+                .accessibilityHidden(true)
 
             Text(title)
-                .font(.subheadline)
+                .font(DS.TextRole.supporting)
 
             Spacer(minLength: 0)
         }
@@ -214,11 +225,11 @@ struct LibraryView: View {
     // MARK: - Empty states
 
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("No Sticker Packs", systemImage: "square.grid.2x2")
-        } description: {
-            Text("Packs group your stickers for WhatsApp. Create one, add photos or videos, then export.")
-        } actions: {
+        EmptyState(
+            symbol: "square.grid.2x2",
+            title: "No Sticker Packs",
+            message: "Packs group your stickers for WhatsApp. Create one, add photos or videos, then export."
+        ) {
             Button("New Pack", systemImage: "plus") {
                 createPack()
             }
@@ -232,14 +243,25 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var noResultsState: some View {
-        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            ContentUnavailableView {
-                Label("No Packs Here", systemImage: "folder")
-            } description: {
-                Text("No packs match this folder filter.")
-            }
-        } else {
+        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             ContentUnavailableView.search(text: searchText)
+        } else if folderFilter == .all {
+            EmptyState(
+                symbol: "folder",
+                title: "No Packs Here",
+                message: "Create a pack to get started."
+            )
+        } else {
+            EmptyState(
+                symbol: "folder",
+                title: "No Packs Here",
+                message: "No packs match this folder filter."
+            ) {
+                Button("Show All Packs") {
+                    folderFilter = .all
+                }
+                .buttonStyle(.glassProminent)
+            }
         }
     }
 
@@ -247,14 +269,14 @@ struct LibraryView: View {
 
     private var grid: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: DS.Space.section) {
                 ForEach(groups) { group in
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: DS.Space.md) {
                         Text(group.title)
-                            .font(.headline)
+                            .font(DS.TextRole.section)
                             .foregroundStyle(.secondary)
 
-                        LazyVGrid(columns: columns, spacing: 16) {
+                        LazyVGrid(columns: columns, spacing: DS.Space.lg) {
                             ForEach(group.packs) { pack in
                                 NavigationLink(value: pack.id) {
                                     PackCard(pack: pack)
@@ -268,7 +290,7 @@ struct LibraryView: View {
                     }
                 }
             }
-            .padding(16)
+            .padding(DS.Space.lg)
         }
     }
 
@@ -364,7 +386,7 @@ struct LibraryView: View {
             let url = try PackArchive.writeTemporaryFile(pack)
             shareItem = ShareItem(url: url)
         } catch {
-            activeAlert = .error(error.localizedDescription)
+            presentError(error.localizedDescription, as: .error)
         }
     }
 
@@ -427,6 +449,20 @@ struct LibraryView: View {
         store.rename(pack.id, to: trimmed)
     }
 
+    /// Single funnel for error alerts so the error haptic always fires with it.
+    private func presentError(_ message: String, as kind: ErrorChannel) {
+        switch kind {
+        case .importFailed: activeAlert = .importFailed(message)
+        case .general: activeAlert = .error(message)
+        }
+        errorPulse += 1
+    }
+
+    private enum ErrorChannel {
+        case importFailed
+        case general
+    }
+
     // MARK: - Actions
 
     private func createPack() {
@@ -448,7 +484,7 @@ struct LibraryView: View {
                 Task { await importMediaFile(url) }
             }
         case .failure(let error):
-            activeAlert = .importFailed(error.localizedDescription)
+            presentError(error.localizedDescription, as: .importFailed)
         }
     }
 
@@ -460,8 +496,9 @@ struct LibraryView: View {
             let data = try Data(contentsOf: url)
             let pack = try PackArchive.importPack(from: data)
             store.importPack(pack)
+            showImportedBanner()
         } catch {
-            activeAlert = .importFailed(error.localizedDescription)
+            presentError(error.localizedDescription, as: .importFailed)
         }
     }
 
@@ -477,13 +514,51 @@ struct LibraryView: View {
             let source = try await StickerSourceStore.importFile(at: url)
             importedMedia = ImportedMedia(source: source)
         } catch {
-            activeAlert = .importFailed(
-                (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            presentError(
+                (error as? LocalizedError)?.errorDescription ?? error.localizedDescription,
+                as: .importFailed
             )
+        }
+    }
+
+    /// Transient, non-blocking confirmation that a pack file landed.
+    private func showImportedBanner() {
+        successPulse += 1
+        showingImportedBanner = true
+        Task {
+            try? await Task.sleep(for: DS.Motion.confirmationHold)
+            showingImportedBanner = false
         }
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+#Preview("Light") {
     LibraryView()
+}
+
+#Preview("Dark") {
+    LibraryView()
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    LibraryView()
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    LibraryView()
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    LibraryView()
+        .frame(width: 430, height: 932)
+}
+
+#Preview("Reduce Transparency") {
+    LibraryView()
+        .environment(\.accessibilityReduceTransparency, true)
 }

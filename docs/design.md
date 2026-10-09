@@ -13,8 +13,14 @@
   `.glass` or plain.
 - Semantic colors/fonts, Dynamic Type, dark mode, accessibility labels on icon-only
   controls, touch targets ≥44pt.
-- Accent color: a coral/pink (`AccentColor` asset). Editor screens (trim/crop/lift) use a
-  dark scheme.
+- **Design system:** `Stickreate/DesignSystem/` (`DS.Space`, `DS.Radius`,
+  `DS.TextRole`, `DS.ColorRole`, `Haptic`, `EmptyState`/`LoadingState`). Screens use
+  these tokens instead of magic numbers. See `docs/overhaul/02-design-spec.md`.
+- Accent color: a coral/pink (`AccentColor` asset), tuned to `#E0264F` so it clears
+  ≥4.5:1 for label text and ≥3:1 as a UI tint in both appearances (the previous
+  `#FF375F` was 3.52:1). Accent is reserved for the single primary action and for
+  selection — never body text, never a content surface. Editor screens (trim/crop/lift)
+  use a dark scheme.
 
 ## Screens
 
@@ -31,7 +37,8 @@
 - Per-tile context menu: Edit, Emojis…, Set as Cover, Duplicate, Delete (confirmed).
 - Tap a tile → **large preview** sheet (`StickerPreviewSheet`) that plays animated stickers.
 - Drag to reorder; header shows kind + count.
-- A prominent green **Add to WhatsApp** button under the header when the pack is exportable.
+- A prominent **Add to WhatsApp** button under the header when the pack is exportable
+  (accent tint, no brand-green).
 
 ### Add Stickers (queue)
 - Pick media (PhotosPicker filtered by pack kind, camera, "Add from Files").
@@ -68,8 +75,9 @@
 
 ### Export sheet — "Add to WhatsApp"
 - Shows ALL stickers in a scrollable grid; tapping one opens the large preview.
-- Pack name + counts + the single green **Add to WhatsApp** action.
-- Mixed/undersized packs are blocked with a clear reason (WhatsApp requires single-kind).
+- Pack name + counts + the single **Add to WhatsApp** action (accent, not green).
+- Mixed/undersized packs are blocked with a clear reason (WhatsApp requires single-kind);
+  an empty pack shows a dedicated empty state.
 
 ### Settings
 - Real, persisted options only: Keep original sources, Export mode, Clear cache (with freed

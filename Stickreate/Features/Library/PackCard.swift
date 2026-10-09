@@ -13,42 +13,44 @@ struct PackCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
             preview
 
             Text(pack.name)
-                .font(.headline)
+                .font(DS.TextRole.cardTitle)
                 .lineLimit(1)
 
             Text(countAndKind)
-                .font(.subheadline)
+                .font(DS.TextRole.supporting)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
             if let folder = pack.folder {
                 Label(folder, systemImage: "folder")
-                    .font(.caption)
+                    .font(DS.TextRole.caption)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
         }
         .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens this pack")
     }
 
     private var preview: some View {
-        RoundedRectangle(cornerRadius: 20, style: .continuous)
-            .fill(Color(uiColor: .secondarySystemBackground))
+        RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+            .fill(DS.ColorRole.contentSurface)
             .aspectRatio(1, contentMode: .fit)
             .overlay {
                 if let thumbnail {
                     Image(uiImage: thumbnail)
                         .resizable()
                         .scaledToFit()
-                        .padding(12)
+                        .padding(DS.Space.md)
                 } else {
                     Image(systemName: "face.smiling")
                         .font(.largeTitle)
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
             }
     }
@@ -65,8 +67,38 @@ struct PackCard: View {
     }
 }
 
-#Preview {
+// MARK: - Previews
+
+#Preview("Light") {
     PackCard(pack: StickerPack(name: "Cats"))
         .frame(width: 180)
         .padding()
+}
+
+#Preview("Dark") {
+    PackCard(pack: StickerPack(name: "Cats"))
+        .frame(width: 180)
+        .padding()
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Largest Dynamic Type") {
+    PackCard(pack: StickerPack(name: "Cats"))
+        .frame(width: 180)
+        .padding()
+        .dynamicTypeSize(.accessibility5)
+}
+
+#Preview("Small iPhone (SE)") {
+    PackCard(pack: StickerPack(name: "Cats"))
+        .frame(width: 150)
+        .padding()
+        .frame(width: 375, height: 667)
+}
+
+#Preview("Large iPhone (Pro Max)") {
+    PackCard(pack: StickerPack(name: "Cats"))
+        .frame(width: 180)
+        .padding()
+        .frame(width: 430, height: 932)
 }

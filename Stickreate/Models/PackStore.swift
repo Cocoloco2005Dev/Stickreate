@@ -29,6 +29,7 @@ final class PackStore {
     init(directory: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]) {
         self.directory = directory
         load()
+        reconcileSources()
     }
 
     /// Clears the current persistence message, e.g. after the alert is dismissed.
@@ -46,10 +47,23 @@ final class PackStore {
         return pack
     }
 
-    /// Inserts an imported pack and persists it.
-    func importPack(_ pack: StickerPack) {
+    /// Validates and inserts an imported pack, then persists it.
+    ///
+    /// Imported packs may hold fewer than WhatsApp's minimum of 3, so the
+    /// minimum isn't enforced here — but a pack must be non-empty, within
+    /// `Limits.maxStickers`, and single-kind. Rejected packs aren't stored and
+    /// are surfaced through `persistenceError`.
+    @discardableResult
+    func importPack(_ pack: StickerPack) -> Bool {
+        guard !pack.stickers.isEmpty,
+              pack.stickers.count <= Limits.maxStickers,
+              !pack.isMixed else {
+            persistenceError = "This pack couldn't be imported: it's empty, too large, or mixes sticker types."
+            return false
+        }
         packs.append(pack)
         persist()
+        return true
     }
 
     func pack(with id: UUID) -> StickerPack? {
@@ -233,6 +247,30 @@ final class PackStore {
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
         return "packs.corrupt-\(timestamp).json"
+    }
+
+    /// Deletes files in `Sources/` that no pack's `sticker.source` references.
+    ///
+    /// Conservative: only regular files directly inside `Sources/` are removed
+    /// (directories are left alone), and the sweep is skipped when `load()` hit
+    /// a problem — otherwise an empty/partial `packs` would make live sources
+    /// look orphaned and wipe them.
+    func reconcileSources() {
+        guard persistenceError == nil else { return }
+
+        let fileManager = FileManager.default
+        let sourcesURL = directory.appendingPathComponent("Sources", isDirectory: true)
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: sourcesURL,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return }
+
+        let referenced = Set(packs.flatMap { $0.stickers.compactMap { $0.source?.fileName } })
+        for file in files where !referenced.contains(file.lastPathComponent) {
+            let isRegular = (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false
+            guard isRegular else { continue }
+            try? fileManager.removeItem(at: file)
+        }
     }
 
     /// Single funnel for writes. Mutators stay non-throwing; failures surface
