@@ -15,6 +15,13 @@ final class MaskEditor {
     /// Upright original image, downscaled to the `maxDimension` cap. Baked by
     /// `applyCrop(_:)`, which is why it is settable within the type.
     private(set) var base: UIImage
+    /// The pristine photo this editor started from, preserved across crops and
+    /// subject lifts. `restoreOriginal()` resets `base` to this.
+    private(set) var originalBase: UIImage
+    /// True while the working `base` is a lifted cut-out carried in from another
+    /// editor (i.e. `originalBase` was supplied at init). Cleared by
+    /// `restoreOriginal()` and preserved correctly across undo/redo.
+    private(set) var isLifted: Bool
     /// `base` composited through the current mask.
     private(set) var preview: UIImage
 
@@ -56,6 +63,7 @@ final class MaskEditor {
         let selectedInstanceIDs: Set<Int>
         let backgroundRemoved: Bool
         let hasSubject: Bool
+        let isLifted: Bool
 
         /// Total mask bytes held by this snapshot, for the undo memory cap.
         var byteCount: Int {
@@ -78,18 +86,21 @@ final class MaskEditor {
     ///   - mask: Vision's subject mask; `nil` starts with everything kept.
     ///   - maxDimension: longest side the base image is downscaled to so all
     ///     mask/composite work stays cheap.
-    init(base: UIImage, mask: CGImage?, maxDimension: Int = 1024) {
+    ///   - originalBase: the pristine photo to preserve for `restoreOriginal()`.
+    ///     Defaults to this editor's own (scaled) base. Pass the previous
+    ///     editor's `originalBase` when a subject lift replaces the working image.
+    init(base: UIImage, mask: CGImage?, maxDimension: Int = 1024, originalBase: UIImage? = nil) {
         let scaledBase = base.scaled(toMaxDimension: CGFloat(maxDimension))
         self.base = scaledBase
+        self.originalBase = originalBase ?? scaledBase
+        self.isLifted = originalBase != nil
 
-        let cgImage = scaledBase.cgImage
-        let width = max(1, cgImage?.width ?? Int((scaledBase.size.width * scaledBase.scale).rounded()))
-        let height = max(1, cgImage?.height ?? Int((scaledBase.size.height * scaledBase.scale).rounded()))
-        self.pixelWidth = width
-        self.pixelHeight = height
+        let size = MaskEditor.pixelSize(of: scaledBase)
+        self.pixelWidth = size.width
+        self.pixelHeight = size.height
 
-        let white = [UInt8](repeating: 255, count: width * height)
-        let subject = mask.map { MaskCompositor.seed(bytesFrom: $0, width: width, height: height) }
+        let white = [UInt8](repeating: 255, count: size.width * size.height)
+        let subject = mask.map { MaskCompositor.seed(bytesFrom: $0, width: size.width, height: size.height) }
         self.whiteMask = white
         self.subjectMask = subject
         self.hasSubject = subject != nil
@@ -144,6 +155,22 @@ final class MaskEditor {
         }
         let cleaned = MaskCompositor.cleanMask(bytes, width: width, height: height)
         return MaskCompositor.maskCGImage(bytes: cleaned, width: width, height: height)
+    }
+
+    // MARK: - Introspection
+
+    /// Pixel dimensions of `image`, matching the sizing rule used at init.
+    static func pixelSize(of image: UIImage) -> (width: Int, height: Int) {
+        let cgImage = image.cgImage
+        let width = max(1, cgImage?.width ?? Int((image.size.width * image.scale).rounded()))
+        let height = max(1, cgImage?.height ?? Int((image.size.height * image.scale).rounded()))
+        return (width, height)
+    }
+
+    /// The current keep mask (top-left row-major) and its pixel size. Read-only
+    /// seam for tests/diagnostics.
+    var maskSnapshot: (bytes: [UInt8], width: Int, height: Int) {
+        (maskData, pixelWidth, pixelHeight)
     }
 
     // MARK: - Editing
@@ -341,6 +368,32 @@ final class MaskEditor {
         refreshPreview()
     }
 
+    /// Brings back the pristine original photo: resets the working image to
+    /// `originalBase` (undoing any crop or subject lift) and clears the mask so
+    /// the whole image shows. Undoable, so the previous state isn't lost.
+    func restoreOriginal() {
+        pushUndo()
+        base = originalBase
+        let size = MaskEditor.pixelSize(of: originalBase)
+        pixelWidth = size.width
+        pixelHeight = size.height
+        whiteMask = [UInt8](repeating: 255, count: size.width * size.height)
+        maskData = whiteMask
+        backgroundRemoved = false
+        selectedInstanceIDs = []
+        isLifted = false
+        // Masks seeded for a different base size no longer line up; drop them.
+        if subjectMask?.count != whiteMask.count {
+            subjectMask = nil
+            hasSubject = false
+        }
+        if instanceMasks.contains(where: { $0.value.count != whiteMask.count }) {
+            instanceMasks = [:]
+        }
+        redoStack.removeAll()
+        refreshPreview()
+    }
+
     /// Bakes a normalized top-left crop into `base`, the mask (and subject /
     /// instance masks), and the pixel dimensions, then keeps editing normally.
     /// Pushes an undo step, so `undo()` restores the full pre-crop state.
@@ -443,7 +496,8 @@ final class MaskEditor {
             instanceMasks: instanceMasks,
             selectedInstanceIDs: selectedInstanceIDs,
             backgroundRemoved: backgroundRemoved,
-            hasSubject: hasSubject
+            hasSubject: hasSubject,
+            isLifted: isLifted
         )
     }
 
@@ -457,6 +511,7 @@ final class MaskEditor {
         selectedInstanceIDs = snapshot.selectedInstanceIDs
         backgroundRemoved = snapshot.backgroundRemoved
         hasSubject = snapshot.hasSubject
+        isLifted = snapshot.isLifted
         whiteMask = [UInt8](repeating: 255, count: snapshot.pixelWidth * snapshot.pixelHeight)
     }
 

@@ -45,3 +45,24 @@ Short record of the main technical/product choices and why.
     saved; the WebP step shows a real percentage.
 
 13. **No accounts / no network.** Everything is on-device; nothing is collected.
+
+14. **Persistence safety, not a blob migration (yet).** 0.20 added a `packs.json.bak` backup +
+    corruption quarantine + error surfacing, but kept base64 blobs inside `packs.json`. Moving blobs
+    to per-sticker files is deferred until it can be done and device-verified safely.
+
+15. **DEBUG-only self-test + hidden debug screen**, gated by `#if DEBUG` and the launch arg
+    `-StickreateSelfTest`. Nothing ships in a Release/App Store build.
+
+16. **DesignSystem tokens + Liquid Glass on the control layer only.** Content is never glass.
+    Accent tuned to `#E0264F` for ≥4.5:1 text contrast in both appearances.
+
+17. **Settings shows only real, wired options.** Dead toggles (`exportMode`, `defaultFPS`,
+    `confirmIntelligentCut`) were removed rather than faked (App Review 2.1). "Keep original
+    sources" is real and applied at commit.
+
+18. **Localization via a String Catalog** (`en` source + `es`). Design-system state components take
+    `String` today (to compose dynamic error text); their translations resolve once they move to
+    `LocalizedStringKey` / `String(localized:)`.
+
+19. **CI publishes evidence**: `.xcresult` (with screenshots), `selftest-report.json`, the IPA,
+    a Privacy-Manifest check in the IPA, and a job summary.

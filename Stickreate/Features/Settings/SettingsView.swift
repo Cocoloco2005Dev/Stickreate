@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// Real, persisted settings backed by `SettingsStore.shared`. Only options that
-/// change app behaviour — no decorative toggles.
+/// Real, persisted settings backed by `SettingsStore.shared`.
+///
+/// The "Keep original sources" preference is persisted here and consumed by the
+/// sticker commit path (see `SettingsStore.shouldPersistOriginalSources`).
 struct SettingsView: View {
     @Bindable private var settings = SettingsStore.shared
 
@@ -15,18 +17,6 @@ struct SettingsView: View {
                 Text("Editing")
             } footer: {
                 Text("Keeps the original photo or video on this iPhone so you can re-open and re-edit a sticker later.")
-            }
-
-            Section {
-                Picker("Export to", selection: $settings.exportMode) {
-                    ForEach(ExportMode.allCases, id: \.self) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-            } header: {
-                Text("Export")
-            } footer: {
-                Text("WhatsApp sends the pack straight to the app. File shares a pack file you can send or import later.")
             }
 
             Section {

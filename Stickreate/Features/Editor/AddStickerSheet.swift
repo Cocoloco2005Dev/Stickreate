@@ -701,7 +701,15 @@ struct AddStickerSheet: View {
             do {
                 committingID = item.id
                 currentStage = .loading
-                let sticker = try await resolvedSticker(for: item)
+                var sticker = try await resolvedSticker(for: item)
+                // Respect the user's "Keep original sources" preference: when
+                // off, don't persist the original media (the sticker then isn't
+                // re-editable). The source is written earlier while editing, so
+                // it must be dropped here at the single commit choke point.
+                if !SettingsStore.shared.shouldPersistOriginalSources, let source = sticker.source {
+                    StickerSourceStore.delete(source)
+                    sticker.source = nil
+                }
                 guard isCompatible(sticker.kind) else {
                     presentError(incompatibleMessage)
                     return

@@ -59,8 +59,8 @@ struct StickerEditorView: View {
     // Intelligent Cut / VisionKit subject lift
     /// Presents the full-screen press-and-hold subject-lift step.
     @State private var showSubjectLift = false
-    /// True once a lifted cut-out has been seeded into the editable mask.
-    @State private var hasLiftedSubject = false
+    /// Confirms before Original discards the lifted cut-out / later edits.
+    @State private var showOriginalResetConfirm = false
     @State private var instanceFeedback: String?
     @State private var feedbackTask: Task<Void, Never>?
 
@@ -129,6 +129,16 @@ struct StickerEditorView: View {
         }
         .task { await load() }
         .fullScreenCover(isPresented: $showSubjectLift) { subjectLiftCover }
+        .confirmationDialog(
+            "Show the original photo?",
+            isPresented: $showOriginalResetConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Restore Original", role: .destructive) { restoreOriginalPhoto() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This discards the Intelligent Cut and any edits made since.")
+        }
     }
 
     // MARK: - Canvas
@@ -151,11 +161,11 @@ struct StickerEditorView: View {
                     .interpolation(.high)
                     .frame(width: max(frame.width, 1), height: max(frame.height, 1))
                     .shadow(
-                        color: .black.opacity(hasLiftedSubject ? 0.35 : 0),
-                        radius: hasLiftedSubject ? 14 : 0,
-                        y: hasLiftedSubject ? 8 : 0
+                        color: .black.opacity(editor.isLifted ? 0.35 : 0),
+                        radius: editor.isLifted ? 14 : 0,
+                        y: editor.isLifted ? 8 : 0
                     )
-                    .animation(reduceMotion ? nil : DS.Motion.quick, value: hasLiftedSubject)
+                    .animation(reduceMotion ? nil : DS.Motion.quick, value: editor.isLifted)
                     .position(x: frame.midX, y: frame.midY)
 
                 canvasOverlay(frame: frame)
@@ -457,15 +467,30 @@ struct StickerEditorView: View {
             return
         }
         let radius = editor.brushRadius
-        let updated = MaskEditor(base: cutout, mask: nil, maxDimension: 1024)
+        let updated = MaskEditor(
+            base: cutout,
+            mask: nil,
+            maxDimension: 1024,
+            originalBase: editor.originalBase
+        )
         updated.brushRadius = radius
         self.editor = updated
         activeTool = .aiCut
-        hasLiftedSubject = true
         hasCommittedChange = true
         applyInitialZoom(canvas: canvasSize, imageSize: updated.base.size, force: true)
         successPulse += 1
         flash("Subject lifted · refine with the manual tools.", duration: 2.0)
+    }
+
+    /// Restores the pristine pre-lift photo and drops back to neutral editing.
+    /// Called after the user confirms the destructive Original action.
+    private func restoreOriginalPhoto() {
+        guard let editor else { return }
+        editor.restoreOriginal()
+        resetCrop()
+        hasCommittedChange = false
+        applyInitialZoom(canvas: canvasSize, imageSize: editor.base.size, force: true)
+        flash("Original photo restored")
     }
 
     private func flash(_ text: String, duration: TimeInterval = 1.2) {
@@ -731,7 +756,7 @@ struct StickerEditorView: View {
 
         case .aiCut:
             VStack(spacing: 8) {
-                if hasLiftedSubject {
+                if editor?.isLifted ?? false {
                     Text("Subject lifted. Refine with Restore, Erase, Rectangle, Lasso or Crop.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -932,11 +957,15 @@ struct StickerEditorView: View {
 
         case .original:
             activeTool = .original
-            if let editor, hasCommittedChange {
+            guard let editor else { return }
+            if editor.isLifted {
+                // The working image is the lifted cut-out; showing the original
+                // means resetting to the pre-lift photo. Confirm first.
+                showOriginalResetConfirm = true
+            } else if hasCommittedChange {
                 // setInstances([]) restores the whole image for both instance and
-                // manual editors, and is an undoable step.
+                // manual editors, and is an undoable step. Any baked crop stays.
                 editor.setInstances([])
-                hasLiftedSubject = false
                 hasCommittedChange = false
                 flash("Whole image restored")
             }
@@ -1018,7 +1047,6 @@ struct StickerEditorView: View {
         let editor = MaskEditor(base: base, mask: nil, maxDimension: 1024)
         self.editor = editor
         activeTool = .original
-        hasLiftedSubject = false
         hasCommittedChange = false
     }
 

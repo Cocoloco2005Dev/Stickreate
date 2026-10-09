@@ -45,3 +45,14 @@
 - Sharing a pack directly to **another person** so they get WhatsApp's "Add" — not possible
   from a third-party app on iOS.
 - **Updating** an already-imported pack in WhatsApp — re-importing duplicates it.
+
+## Changes in 0.20.0
+
+- **Keep original sources** (Settings) — when off, new stickers don't store the original media and
+  therefore can't be re-edited; when on, they can (default).
+- **Localization** — English + Spanish String Catalog (249 strings). Some design-system state
+  components still show English until they adopt `LocalizedStringKey`.
+- **Corruption recovery** — an unreadable library is quarantined and restored from a backup instead
+  of silently appearing empty.
+- **DEBUG self-test** — launch with `-StickreateSelfTest` (DEBUG builds) to run an on-device
+  end-to-end check and write `selftest-report.json`.

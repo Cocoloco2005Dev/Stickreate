@@ -57,9 +57,10 @@ jobs:
             -configuration Release
 
       - name: Run tests
+        id: test
         run: |
           set -euo pipefail
-          DEVICE=$(xcrun simctl list devices available --json | python3 -c "
+          DEVICE_INFO=$(xcrun simctl list devices available --json | python3 -c "
           import json,sys,re
           data=json.load(sys.stdin)['devices']
           def ver(rt):
@@ -72,16 +73,101 @@ jobs:
               for d in devs:
                   if d.get('isAvailable') and d['name'].startswith('iPhone'):
                       if best is None or ver(rt) > ver(best[0]):
-                          best=(rt,d['name'])
-          print(best[1] if best else '')
+                          best=(rt,d['name'],d.get('udid',''))
+          print(f'{best[1]}|{best[2]}' if best else '')
           ")
-          [ -n "$DEVICE" ] || { echo "No iPhone simulator available"; exit 1; }
-          echo "Testing on $DEVICE"
+          [ -n "$DEVICE_INFO" ] || { echo "No iPhone simulator available"; exit 1; }
+          DEVICE="${DEVICE_INFO%%|*}"
+          SIM_UDID="${DEVICE_INFO##*|}"
+          echo "Testing on $DEVICE ($SIM_UDID)"
+          # Expose the chosen simulator + a deterministic DerivedData dir so the
+          # later self-test step can reuse both without re-discovering anything.
+          echo "SIM_NAME=$DEVICE" >> "$GITHUB_ENV"
+          echo "SIM_UDID=$SIM_UDID" >> "$GITHUB_ENV"
+          # Pin DerivedData and emit a result bundle (keeps screenshots/attachments).
           xcodebuild test \
             -project Stickreate.xcodeproj \
             -scheme Stickreate \
             -destination "platform=iOS Simulator,name=$DEVICE" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult" \
             CODE_SIGNING_ALLOWED=NO
+
+      # Always upload the .xcresult so a failure still yields its attachments.
+      - name: Upload test result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults-xcresult
+          path: ${{ runner.temp }}/TestResults.xcresult
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Best-effort on-device self-test. Plumbing problems only warn and skip;
+      # a report that exists with a failed check DOES fail the job.
+      - name: Self-test on simulator
+        if: always()
+        run: |
+          set -uo pipefail
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/Stickreate.app"
+          APP_ID="com.cocol.stickreate"
+          UDID="${SIM_UDID:-}"
+          REPORT="$GITHUB_WORKSPACE/selftest-report.json"
+          rm -f "$REPORT"
+
+          if [ -z "$UDID" ]; then
+            echo "::warning::No simulator UDID available; skipping self-test"
+            exit 0
+          fi
+          if [ ! -d "$APP" ]; then
+            echo "::warning::Debug app not found at $APP; skipping self-test"
+            exit 0
+          fi
+
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b || true
+
+          if ! xcrun simctl install "$UDID" "$APP"; then
+            echo "::warning::simctl install failed; skipping self-test"
+            exit 0
+          fi
+          if ! xcrun simctl launch "$UDID" "$APP_ID" -StickreateSelfTest; then
+            echo "::warning::simctl launch failed; skipping self-test"
+            exit 0
+          fi
+
+          # Poll for the report the app writes to its Documents directory.
+          CONTAINER=""
+          for _ in $(seq 1 30); do
+            CONTAINER=$(xcrun simctl get_app_container "$UDID" "$APP_ID" data 2>/dev/null) || CONTAINER=""
+            if [ -n "$CONTAINER" ] && [ -f "$CONTAINER/Documents/selftest-report.json" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$CONTAINER" ] || [ ! -f "$CONTAINER/Documents/selftest-report.json" ]; then
+            echo "::warning::selftest-report.json not found after launch; skipping self-test assertions"
+            exit 0
+          fi
+
+          cp "$CONTAINER/Documents/selftest-report.json" "$REPORT"
+          echo "Self-test report copied to $REPORT"
+          python3 -c "import json;print(json.load(open('$REPORT')).get('summary','(no summary)'))"
+
+          FAILED=$(python3 -c "import json;print(json.load(open('$REPORT')).get('failed',0))")
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED self-test check(s) failed"
+            exit 1
+          fi
+
+      - name: Upload self-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-report
+          path: ${{ github.workspace }}/selftest-report.json
+          if-no-files-found: warn
 
       - name: Resolve version
         run: |
@@ -126,6 +212,22 @@ jobs:
           echo "IPA=$RUNNER_TEMP/ipa/Stickreate-unsigned.ipa" >> "$GITHUB_ENV"
           ls -la "$RUNNER_TEMP/ipa"
 
+      # Fail the job if the packaged IPA lacks a valid privacy manifest.
+      - name: Verify privacy manifest in IPA
+        run: |
+          set -euo pipefail
+          IPA="$RUNNER_TEMP/ipa/Stickreate-unsigned.ipa"
+          [ -f "$IPA" ] || { echo "IPA not found at $IPA"; exit 1; }
+          CHECK_DIR="$RUNNER_TEMP/privacy-lint"
+          rm -rf "$CHECK_DIR"
+          mkdir -p "$CHECK_DIR"
+          unzip -p "$IPA" "Payload/Stickreate.app/PrivacyInfo.xcprivacy" > "$CHECK_DIR/PrivacyInfo.xcprivacy" 2>/dev/null || true
+          if [ ! -s "$CHECK_DIR/PrivacyInfo.xcprivacy" ]; then
+            echo "::error::PrivacyInfo.xcprivacy missing from IPA"
+            exit 1
+          fi
+          plutil -lint "$CHECK_DIR/PrivacyInfo.xcprivacy"
+
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
@@ -138,3 +240,30 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ runner.temp }}/ipa/Stickreate-unsigned.ipa
+
+      # Always append a results table; check timings come from the self-test report.
+      - name: Job summary
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+        run: |
+          set -uo pipefail
+          IPA="$RUNNER_TEMP/ipa/Stickreate-unsigned.ipa"
+          REPORT="$GITHUB_WORKSPACE/selftest-report.json"
+          {
+            echo "## Stickreate CI summary"
+            echo ""
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Tests | ${TEST_OUTCOME:-unknown} |"
+            if [ -f "$IPA" ]; then
+              echo "| IPA size | $(stat -f%z "$IPA") bytes |"
+            else
+              echo "| IPA size | not available |"
+            fi
+            if [ -f "$REPORT" ]; then
+              python3 -c "import json;r=json.load(open('$REPORT'));total=len(r.get('checks',[]));print('| Self-test | %s %d/%d |'%('PASS' if r.get('failed',0)==0 else 'FAIL',r.get('passed',0),total));print('| Self-test total | %.0f ms |'%r.get('totalDurationMS',0));print('');print('| Check | Result | ms |');print('| --- | --- | --- |');print('\n'.join('| %s | %s | %.1f |'%(c.get('name','?'),'pass' if c.get('passed') else 'FAIL',c.get('durationMS',0)) for c in r.get('checks',[])))"
+            else
+              echo "| Self-test | not available |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

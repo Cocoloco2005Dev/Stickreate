@@ -59,4 +59,25 @@ Notes:
 ## Versioning
 
 - `project.yml` sets a default `MARKETING_VERSION`; releases override it from the git tag.
-- Current: **v0.19.0**.
+- Current: **v0.20.0**.
+
+## CI artifacts & checks (0.20.0)
+
+On every push/PR the workflow now also:
+
+- runs tests with `-resultBundlePath` and uploads the `.xcresult` (screenshots ride in it);
+- launches the DEBUG build on the simulator with `-StickreateSelfTest`, copies
+  `selftest-report.json`, and uploads it (best-effort plumbing; fails only if a check actually fails);
+- verifies `Payload/Stickreate.app/PrivacyInfo.xcprivacy` exists and passes `plutil -lint` (fails the job if not);
+- writes a markdown job summary (tests outcome, IPA size, self-test pass/fail + encode timings).
+
+## AltStore / SideStore source (one-tap updates)
+
+Publish a source JSON on GitHub Pages (e.g. `docs/apps.json` → `https://<user>.github.io/Stickreate/apps.json`)
+so updates are one tap. Required fields:
+
+- source: `name`, `identifier`, `sourceURL`, `apps[]`.
+- app: `name`, `bundleIdentifier` (= `CFBundleIdentifier`), `developerName`, `subtitle`,
+  `localizedDescription`, `iconURL`, `tintColor`, `versions[]`.
+- version: `version` (= `CFBundleShortVersionString`), `buildVersion` (= `CFBundleVersion`),
+  `date`, `downloadURL` (direct IPA), `size` (bytes), `minOSVersion`.

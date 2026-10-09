@@ -64,6 +64,18 @@ final class StickerEncoderBudgetTests: XCTestCase {
         XCTAssertLessThanOrEqual(data?.count ?? .max, Limits.maxStaticBytes)
     }
 
+    /// Worst-case static input: incompressible 512×512 noise. The static path has
+    /// no frame-budget to drop, only the quality ladder (1.0 → 0.30), so unlike
+    /// the animated path it may legitimately fail to reach the cap and return
+    /// `nil`. The guaranteed invariant is that it never returns an over-budget
+    /// payload.
+    func testStaticImageNeverExceedsBudget() {
+        let data = StickerEncoder.staticSticker(from: noiseImage(seed: 0xDEAD_BEEF))
+        if let data {
+            XCTAssertLessThanOrEqual(data.count, Limits.maxStaticBytes)
+        }
+    }
+
     func testAnimatedSolidFramesEncodeWithinBudget() {
         let frames = [
             Frame(image: solidImage(.systemRed), duration: 0.1),
@@ -136,5 +148,8 @@ final class StickerEncoderBudgetTests: XCTestCase {
             return
         }
         XCTAssertLessThanOrEqual(data.count, Limits.maxAnimatedBytes)
+        // Worst-case motion must fit the 480 KB target, not just the 500 KB cap
+        // (the encoder returns the first candidate whose bytes fit this budget).
+        XCTAssertLessThanOrEqual(data.count, 480 * 1024)
     }
 }

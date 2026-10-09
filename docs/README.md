@@ -4,7 +4,7 @@ Native iOS app (iOS 26, SwiftUI, Liquid Glass) to create, edit, and export **sta
 animated WhatsApp stickers** from photos, videos, and GIFs.
 
 Repository: `C:\Users\cocol\source\Stickreate`
-Latest release: **v0.19.0**
+Latest release: **v0.20.0**
 
 ## Index
 
@@ -19,10 +19,22 @@ Latest release: **v0.19.0**
 | [troubleshooting.md](troubleshooting.md) | Known pitfalls and how they were solved |
 | [status.md](status.md) | Current state, known issues, open questions, roadmap |
 
+### Overhaul (this release)
+
+| File | Contents |
+|---|---|
+| [overhaul/00-ground-truth.md](overhaul/00-ground-truth.md) | Phase 1 inventory + external constraints |
+| [overhaul/01-audit.md](overhaul/01-audit.md) | Phase 2 audit + prioritized backlog (P0–P3) |
+| [overhaul/02-design-spec.md](overhaul/02-design-spec.md) | Phase 3 design tokens + per-screen spec |
+| [overhaul/03-device-verification.md](overhaul/03-device-verification.md) | Phase 6 device checklist |
+| [overhaul/04-app-store-readiness.md](overhaul/04-app-store-readiness.md) | Phase 7 compliance checklist |
+| [../overhaul-log.md](../overhaul-log.md) | Living per-phase log with evidence |
+
 ## Quick summary
 
 - **Creation**: pick photo / video / GIF → edit → the app produces a 512×512 WebP
-  (static ≤100 KB, animated ≤500 KB) and keeps the original media so it can be re-edited.
+  (static ≤100 KB, animated ≤500 KB) and keeps the original media so it can be re-edited
+  (optional — "Keep original sources").
 - **Editing**: photo editor with Apple VisionKit subject lift ("press and hold", like
   Photos), manual cutout tools (Restore / Erase / Rectangle / Lasso), crop, and undo/redo.
   Video editor with duration trim (filmstrip), spatial crop, and optional subject cut.

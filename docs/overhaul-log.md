@@ -51,3 +51,30 @@ Branch flow: `overhaul/audit` (Phases 1–2) → `overhaul/p0-fixes` (Phase 4a) 
   - Swift 6 mode / warnings-as-errors → Phase 5.
   - Localization (EN + es-AR) → after design freezes strings.
   - **P0-3** app icon still copyrighted art (user decision: keep for now).
+
+## Phase 3 (chunk 2) + Phase 4b (part 2) — editors, Settings, hardening
+
+- **Branch**: `overhaul/p0-fixes`. CI **green** (run `37890619218`).
+- **Design chunk 2** (`des-1`): editors reskinned (Adjust/Trim/Lift/queue/preview/Background/Settings);
+  `MagnifyGesture`; crop + filmstrip are VoiceOver-adjustable; awaited `player.seek`; `PlaybackModel`
+  `@MainActor`; stage announcements; GIF stage progress; mixed-selection trimmed to one kind.
+- **Phase 4b part 2** (`fix-2`): `storageSummary` cached + `clearCache` safer; WhatsApp open-delay via a
+  main-actor `Task`; dead auto-background path deleted; archive I/O moved off the main actor.
+- **CI fix**: `StateViews` take `String` (dynamic error messages can't be `LocalizedStringKey`).
+
+## Phase 3 (chunk 3) + Phase 5 + 6/7 — restore, self-test, tests, CI, docs
+
+- **P1-2** (`fix-1`): `MaskEditor` keeps a pristine `originalBase`; `Original` restores the pre-lift
+  photo behind a confirmation; undoable. New `MaskEditorTests`.
+- **Self-test** (`fix-3`): `#if DEBUG` `SelfTest`/`DebugView`/`SelfTestReport` + `os.Logger`; launch arg
+  `-StickreateSelfTest`; synthetic checks; `selftest-report.json`.
+- **Tests** (`fix-6`): geometry edge cases, encoder budget, frame-timing sums, `.wasticker` round-trip,
+  ZIP-bomb rejection, WhatsApp payload validation.
+- **Settings** (`fix-4`): dead toggles removed; `keepOriginalSources` wired at the AddStickerSheet commit
+  choke point; `shouldPersistOriginalSources` accessor.
+- **CI** (`fix-7`): `.xcresult` + `selftest-report.json` artifacts, Privacy-Manifest check, job summary.
+- **Localization** (`fix-8`): `Localizable.xcstrings` (en + es, 249 strings), JSON-validated.
+- **Docs**: `03-device-verification.md`, `04-app-store-readiness.md`, `docs/legal/{privacy-policy,support}.md`;
+  README/status/decisions/troubleshooting/build-release/architecture/features updated; version → 0.20.0.
+- **Not done / deferred**: P0-2 full ownership refactor (needs device), Swift 6 mode + warnings-as-errors,
+  `.wasticker` UTType, app icon replacement, final merge + CI build.

@@ -1,0 +1,2496 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "Add" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar"
+          }
+        }
+      }
+    },
+    "Add from Files" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar desde Archivos"
+          }
+        }
+      }
+    },
+    "Add media from Files" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar contenido desde Archivos"
+          }
+        }
+      }
+    },
+    "Add more photos or videos" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar más fotos o videos"
+          }
+        }
+      }
+    },
+    "Add packs or media" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar paquetes o contenido"
+          }
+        }
+      }
+    },
+    "Add Sticker" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar sticker"
+          }
+        }
+      }
+    },
+    "Add Stickers" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar stickers"
+          }
+        }
+      }
+    },
+    "Add to Pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar al paquete"
+          }
+        }
+      }
+    },
+    "Add to WhatsApp" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar a WhatsApp"
+          }
+        }
+      }
+    },
+    "Add to WhatsApp…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregar a WhatsApp…"
+          }
+        }
+      }
+    },
+    "Add 1 more sticker." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregá 1 sticker más."
+          }
+        }
+      }
+    },
+    "Add 1 more sticker to export to WhatsApp." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregá 1 sticker más para exportar a WhatsApp."
+          }
+        }
+      }
+    },
+    "Add stickers to this pack, then come back to add it to WhatsApp." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregá stickers a este paquete y volvé para agregarlo a WhatsApp."
+          }
+        }
+      }
+    },
+    "Adding" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregando"
+          }
+        }
+      }
+    },
+    "Adding…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agregando…"
+          }
+        }
+      }
+    },
+    "Adjust" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajustar"
+          }
+        }
+      }
+    },
+    "All Folders" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todas las carpetas"
+          }
+        }
+      }
+    },
+    "Already in this pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ya está en este paquete"
+          }
+        }
+      }
+    },
+    "Animated" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Animado"
+          }
+        }
+      }
+    },
+    "Animated sticker" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sticker animado"
+          }
+        }
+      }
+    },
+    "Animated sticker preview" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vista previa del sticker animado"
+          }
+        }
+      }
+    },
+    "Apple Vision · on-device" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple Vision · en el dispositivo"
+          }
+        }
+      }
+    },
+    "App" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App"
+          }
+        }
+      }
+    },
+    "Apply" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aplicar"
+          }
+        }
+      }
+    },
+    "Apply changes" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aplicar cambios"
+          }
+        }
+      }
+    },
+    "Apply crop" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aplicar recorte"
+          }
+        }
+      }
+    },
+    "Apply crop to the working image" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aplicar el recorte a la imagen de trabajo"
+          }
+        }
+      }
+    },
+    "Applies to Rectangle and Lasso · Keep restores pixels, Remove erases them." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se aplica a Rectángulo y Lazo · Conservar recupera píxeles, Quitar los elimina."
+          }
+        }
+      }
+    },
+    "Back" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Atrás"
+          }
+        }
+      }
+    },
+    "Back to crop" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Volver a encuadrar"
+          }
+        }
+      }
+    },
+    "Back to tools" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Volver a las herramientas"
+          }
+        }
+      }
+    },
+    "Back to trim" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Volver a recortar"
+          }
+        }
+      }
+    },
+    "Background" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fondo"
+          }
+        }
+      }
+    },
+    "Brings back the whole image. Nothing is removed." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recupera la imagen completa. No se elimina nada."
+          }
+        }
+      }
+    },
+    "Build" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Compilación"
+          }
+        }
+      }
+    },
+    "Camera" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cámara"
+          }
+        }
+      }
+    },
+    "Camera access is off. Turn it on in Settings to take a photo." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El acceso a la cámara está desactivado. Activalo en Ajustes para sacar una foto."
+          }
+        }
+      }
+    },
+    "Cancel" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cancelar"
+          }
+        }
+      }
+    },
+    "Choose a pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegí un paquete"
+          }
+        }
+      }
+    },
+    "Choose a pack to add it to." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegí un paquete para agregarlo."
+          }
+        }
+      }
+    },
+    "Choose from your photo library" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegí de tu fototeca"
+          }
+        }
+      }
+    },
+    "Clear Cache" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Borrar caché"
+          }
+        }
+      }
+    },
+    "Clearing removes temporary files created while editing. Your packs and originals are not touched." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Borrar quita los archivos temporales que se crean al editar. Tus paquetes y originales no se tocan."
+          }
+        }
+      }
+    },
+    "Close" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerrar"
+          }
+        }
+      }
+    },
+    "Close preview" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerrar vista previa"
+          }
+        }
+      }
+    },
+    "Common" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comunes"
+          }
+        }
+      }
+    },
+    "Couldn't add pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo agregar el paquete"
+          }
+        }
+      }
+    },
+    "Couldn't create sticker" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo crear el sticker"
+          }
+        }
+      }
+    },
+    "Couldn't lift subject" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo levantar el sujeto"
+          }
+        }
+      }
+    },
+    "Couldn't lift that subject. Try again." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo levantar ese sujeto. Probá de nuevo."
+          }
+        }
+      }
+    },
+    "Couldn't open that file" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo abrir ese archivo"
+          }
+        }
+      }
+    },
+    "Couldn't Open This Photo" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo abrir esta foto"
+          }
+        }
+      }
+    },
+    "Couldn't Open This Video" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo abrir este video"
+          }
+        }
+      }
+    },
+    "Couldn't read the lifted subject." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo leer el sujeto levantado."
+          }
+        }
+      }
+    },
+    "Couldn't read this photo." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo leer esta foto."
+          }
+        }
+      }
+    },
+    "Couldn't render the edited image." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo renderizar la imagen editada."
+          }
+        }
+      }
+    },
+    "Cover" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Portada"
+          }
+        }
+      }
+    },
+    "Create a pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Creá un paquete"
+          }
+        }
+      }
+    },
+    "Create a pack to get started." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Creá un paquete para empezar."
+          }
+        }
+      }
+    },
+    "Creates a new pack and selects it" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crea un paquete nuevo y lo selecciona"
+          }
+        }
+      }
+    },
+    "Crop" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Encuadrar"
+          }
+        }
+      }
+    },
+    "Crop applied" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recorte aplicado"
+          }
+        }
+      }
+    },
+    "Crop area" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Área de recorte"
+          }
+        }
+      }
+    },
+    "Delete" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminar"
+          }
+        }
+      }
+    },
+    "Delete Pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminar paquete"
+          }
+        }
+      }
+    },
+    "Delete Pack…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminar paquete…"
+          }
+        }
+      }
+    },
+    "Delete Sticker" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminar sticker"
+          }
+        }
+      }
+    },
+    "Delete this pack?" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Eliminar este paquete?"
+          }
+        }
+      }
+    },
+    "Delete this sticker?" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Eliminar este sticker?"
+          }
+        }
+      }
+    },
+    "Delete…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminar…"
+          }
+        }
+      }
+    },
+    "Dismiss the welcome card" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerrar la tarjeta de bienvenida"
+          }
+        }
+      }
+    },
+    "Done" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listo"
+          }
+        }
+      }
+    },
+    "Drag into the box, or use the Use Subject button" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrastrá al cuadro o usá el botón Usar sujeto"
+          }
+        }
+      }
+    },
+    "Drag to frame the crop. It applies to every frame." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrastrá para encuadrar el recorte. Se aplica a todos los fotogramas."
+          }
+        }
+      }
+    },
+    "Drag to move, or the corners to resize" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrastrá para mover, o las esquinas para cambiar el tamaño"
+          }
+        }
+      }
+    },
+    "Duplicate" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Duplicar"
+          }
+        }
+      }
+    },
+    "Edit" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Editar"
+          }
+        }
+      }
+    },
+    "Edit or trim each item" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Editá o recortá cada elemento"
+          }
+        }
+      }
+    },
+    "Editing" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Edición"
+          }
+        }
+      }
+    },
+    "Emoji" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Emoji"
+          }
+        }
+      }
+    },
+    "Emojis" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Emojis"
+          }
+        }
+      }
+    },
+    "Emojis…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Emojis…"
+          }
+        }
+      }
+    },
+    "Empty" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vacío"
+          }
+        }
+      }
+    },
+    "Erase" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Borrar"
+          }
+        }
+      }
+    },
+    "Erase removes pixels." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Borrar elimina píxeles."
+          }
+        }
+      }
+    },
+    "Existing folders" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carpetas existentes"
+          }
+        }
+      }
+    },
+    "Export Pack File…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Exportar archivo de paquete…"
+          }
+        }
+      }
+    },
+    "Extend end" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Extender el final"
+          }
+        }
+      }
+    },
+    "Extend start" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Extender el inicio"
+          }
+        }
+      }
+    },
+    "Files" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Archivos"
+          }
+        }
+      }
+    },
+    "Filter by folder" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filtrar por carpeta"
+          }
+        }
+      }
+    },
+    "Finding subjects" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Buscando sujetos"
+          }
+        }
+      }
+    },
+    "Finding subjects…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Buscando sujetos…"
+          }
+        }
+      }
+    },
+    "Folder" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carpeta"
+          }
+        }
+      }
+    },
+    "Folder name" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nombre de la carpeta"
+          }
+        }
+      }
+    },
+    "Folder…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carpeta…"
+          }
+        }
+      }
+    },
+    "Frame the image, then Apply crop to bake it into the photo." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Encuadrá la imagen y tocá Aplicar recorte para fijarlo en la foto."
+          }
+        }
+      }
+    },
+    "GIF" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GIF"
+          }
+        }
+      }
+    },
+    "Give this pack a name." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poné un nombre al paquete."
+          }
+        }
+      }
+    },
+    "Got it" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Entendido"
+          }
+        }
+      }
+    },
+    "Holds photos" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Contiene fotos"
+          }
+        }
+      }
+    },
+    "Holds videos" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Contiene videos"
+          }
+        }
+      }
+    },
+    "How it works" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cómo funciona"
+          }
+        }
+      }
+    },
+    "If WhatsApp doesn't open, open it once and try again." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si WhatsApp no se abre, abrilo una vez y probá de nuevo."
+          }
+        }
+      }
+    },
+    "Import failed" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La importación falló"
+          }
+        }
+      }
+    },
+    "Import from Files" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Importar desde Archivos"
+          }
+        }
+      }
+    },
+    "Import…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Importar…"
+          }
+        }
+      }
+    },
+    "Importing…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Importando…"
+          }
+        }
+      }
+    },
+    "Intelligent Cut" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Corte inteligente"
+          }
+        }
+      }
+    },
+    "Intelligent Cut lifts subjects on-device with VisionKit." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Corte inteligente levanta sujetos en el dispositivo con VisionKit."
+          }
+        }
+      }
+    },
+    "Intelligent Cut runs on this iPhone. Your photo never leaves the device." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Corte inteligente se ejecuta en este iPhone. Tu foto nunca sale del dispositivo."
+          }
+        }
+      }
+    },
+    "Keep" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conservar"
+          }
+        }
+      }
+    },
+    "Keep original sources" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conservar originales"
+          }
+        }
+      }
+    },
+    "Keep the background or lift the subject with Intelligent Cut." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conservá el fondo o levantá el sujeto con Corte inteligente."
+          }
+        }
+      }
+    },
+    "Keeps the background" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conserva el fondo"
+          }
+        }
+      }
+    },
+    "Keeps the original photo or video on this iPhone so you can re-open and re-edit a sticker later." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conserva la foto o el video original en este iPhone para que puedas volver a abrir y editar un sticker más adelante."
+          }
+        }
+      }
+    },
+    "Lasso" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lazo"
+          }
+        }
+      }
+    },
+    "Library problem" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Problema con la biblioteca"
+          }
+        }
+      }
+    },
+    "Lift Another Subject" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Levantar otro sujeto"
+          }
+        }
+      }
+    },
+    "Lift Different" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Levantar otro"
+          }
+        }
+      }
+    },
+    "Lift Subject" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Levantar sujeto"
+          }
+        }
+      }
+    },
+    "Lifted subject" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sujeto levantado"
+          }
+        }
+      }
+    },
+    "Loading…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cargando…"
+          }
+        }
+      }
+    },
+    "Loading video…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cargando video…"
+          }
+        }
+      }
+    },
+    "Mixed" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mixto"
+          }
+        }
+      }
+    },
+    "More" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Más"
+          }
+        }
+      }
+    },
+    "New Pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nuevo paquete"
+          }
+        }
+      }
+    },
+    "Next" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Siguiente"
+          }
+        }
+      }
+    },
+    "No emojis yet" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todavía no hay emojis"
+          }
+        }
+      }
+    },
+    "No Folder" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sin carpeta"
+          }
+        }
+      }
+    },
+    "No Packs Here" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No hay paquetes acá"
+          }
+        }
+      }
+    },
+    "No Packs Yet" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todavía no hay paquetes"
+          }
+        }
+      }
+    },
+    "No packs match this folder filter." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ningún paquete coincide con este filtro de carpeta."
+          }
+        }
+      }
+    },
+    "No Sticker Packs" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No hay paquetes de stickers"
+          }
+        }
+      }
+    },
+    "No Stickers to Add" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No hay stickers para agregar"
+          }
+        }
+      }
+    },
+    "No Stickers Yet" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todavía no hay stickers"
+          }
+        }
+      }
+    },
+    "No subjects found" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se encontraron sujetos"
+          }
+        }
+      }
+    },
+    "None" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ninguna"
+          }
+        }
+      }
+    },
+    "Nothing to clear." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No hay nada para borrar."
+          }
+        }
+      }
+    },
+    "OK" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OK"
+          }
+        }
+      }
+    },
+    "On-device" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En el dispositivo"
+          }
+        }
+      }
+    },
+    "Only one kind per pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un solo tipo por paquete"
+          }
+        }
+      }
+    },
+    "Opens a large preview" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre una vista previa grande"
+          }
+        }
+      }
+    },
+    "Opens the editor" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre el editor"
+          }
+        }
+      }
+    },
+    "Open the subject lift step" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre el paso de levantar sujeto"
+          }
+        }
+      }
+    },
+    "Open the subject lift step again" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vuelve a abrir el paso de levantar sujeto"
+          }
+        }
+      }
+    },
+    "Opens the WhatsApp sticker import" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre la importación de stickers de WhatsApp"
+          }
+        }
+      }
+    },
+    "Opens this pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abre este paquete"
+          }
+        }
+      }
+    },
+    "Original" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Original"
+          }
+        }
+      }
+    },
+    "Original photo restored" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Foto original restaurada"
+          }
+        }
+      }
+    },
+    "Pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paquete"
+          }
+        }
+      }
+    },
+    "Pack imported" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paquete importado"
+          }
+        }
+      }
+    },
+    "Pack Is Full" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El paquete está lleno"
+          }
+        }
+      }
+    },
+    "Pack name" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nombre del paquete"
+          }
+        }
+      }
+    },
+    "Pack Not Found" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paquete no encontrado"
+          }
+        }
+      }
+    },
+    "Pack options" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opciones del paquete"
+          }
+        }
+      }
+    },
+    "Packs" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paquetes"
+          }
+        }
+      }
+    },
+    "Packs group your stickers for WhatsApp. Create one, add photos or videos, then export." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Los paquetes agrupan tus stickers para WhatsApp. Creá uno, agregá fotos o videos y después exportá."
+          }
+        }
+      }
+    },
+    "Paint size" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tamaño del pincel"
+          }
+        }
+      }
+    },
+    "Pause" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pausar"
+          }
+        }
+      }
+    },
+    "Photo" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Foto"
+          }
+        }
+      }
+    },
+    "Photos" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotos"
+          }
+        }
+      }
+    },
+    "Pick photos" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegí fotos"
+          }
+        }
+      }
+    },
+    "Pick photos, videos, or GIFs" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegí fotos, videos o GIFs"
+          }
+        }
+      }
+    },
+    "Pick videos" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegí videos"
+          }
+        }
+      }
+    },
+    "Pinch to zoom in and out" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pellizcá para acercar y alejar"
+          }
+        }
+      }
+    },
+    "Play" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reproducir"
+          }
+        }
+      }
+    },
+    "Playback position" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Posición de reproducción"
+          }
+        }
+      }
+    },
+    "Preparing…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preparando…"
+          }
+        }
+      }
+    },
+    "Preparing photo…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preparando foto…"
+          }
+        }
+      }
+    },
+    "Preparing sticker…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preparando sticker…"
+          }
+        }
+      }
+    },
+    "Press and hold a subject, then drag it into the box" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mantené presionado un sujeto y arrastralo al cuadro"
+          }
+        }
+      }
+    },
+    "Preview" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vista previa"
+          }
+        }
+      }
+    },
+    "Privacy" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Privacidad"
+          }
+        }
+      }
+    },
+    "Ready to add to WhatsApp" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listo para agregar a WhatsApp"
+          }
+        }
+      }
+    },
+    "Rectangle" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rectángulo"
+          }
+        }
+      }
+    },
+    "Redo" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rehacer"
+          }
+        }
+      }
+    },
+    "Remove" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quitar"
+          }
+        }
+      }
+    },
+    "Remove from Folder" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quitar de la carpeta"
+          }
+        }
+      }
+    },
+    "Rename Pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cambiar nombre del paquete"
+          }
+        }
+      }
+    },
+    "Rename…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cambiar nombre…"
+          }
+        }
+      }
+    },
+    "Reset" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restablecer"
+          }
+        }
+      }
+    },
+    "Reset crop" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restablecer recorte"
+          }
+        }
+      }
+    },
+    "Restore" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restaurar"
+          }
+        }
+      }
+    },
+    "Restore brings removed pixels back." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restaurar recupera los píxeles eliminados."
+          }
+        }
+      }
+    },
+    "Restore Original" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Restaurar original"
+          }
+        }
+      }
+    },
+    "Save" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guardar"
+          }
+        }
+      }
+    },
+    "Saving…" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guardando…"
+          }
+        }
+      }
+    },
+    "Search packs" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Buscar paquetes"
+          }
+        }
+      }
+    },
+    "Selects this pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selecciona este paquete"
+          }
+        }
+      }
+    },
+    "Set as Cover" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usar como portada"
+          }
+        }
+      }
+    },
+    "Settings" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ajustes"
+          }
+        }
+      }
+    },
+    "Shorten end" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Acortar el final"
+          }
+        }
+      }
+    },
+    "Shorten start" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Acortar el inicio"
+          }
+        }
+      }
+    },
+    "Show All Packs" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostrar todos los paquetes"
+          }
+        }
+      }
+    },
+    "Show the original photo?" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "¿Mostrar la foto original?"
+          }
+        }
+      }
+    },
+    "Something went wrong" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Algo salió mal"
+          }
+        }
+      }
+    },
+    "Static" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Estático"
+          }
+        }
+      }
+    },
+    "Sticker" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sticker"
+          }
+        }
+      }
+    },
+    "Sticker Packs" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paquetes de stickers"
+          }
+        }
+      }
+    },
+    "Sticker preview" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vista previa del sticker"
+          }
+        }
+      }
+    },
+    "Stickers are created entirely on your iPhone. Intelligent Cut uses Apple's Vision framework on-device." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Los stickers se crean por completo en tu iPhone. Corte inteligente usa el framework Vision de Apple en el dispositivo."
+          }
+        }
+      }
+    },
+    "Stops or restarts the animated preview" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Detiene o reinicia la vista previa animada"
+          }
+        }
+      }
+    },
+    "Storage" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Almacenamiento"
+          }
+        }
+      }
+    },
+    "Storage used" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Almacenamiento usado"
+          }
+        }
+      }
+    },
+    "Subject lifted · refine with the manual tools." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sujeto levantado · refiná con las herramientas manuales."
+          }
+        }
+      }
+    },
+    "Subject lifted. Refine with Restore, Erase, Rectangle, Lasso or Crop." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sujeto levantado. Refiná con Restaurar, Borrar, Rectángulo, Lazo o Encuadrar."
+          }
+        }
+      }
+    },
+    "Swipe up or down to move the selection; use the actions to resize an edge" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deslizá hacia arriba o abajo para mover la selección; usá las acciones para cambiar un borde"
+          }
+        }
+      }
+    },
+    "Take a photo" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sacá una foto"
+          }
+        }
+      }
+    },
+    "Tap Add to save them to the pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocá Agregar para guardarlos en el paquete"
+          }
+        }
+      }
+    },
+    "Tap an item to open its editor. Anything you leave unedited is added with defaults." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocá un elemento para abrir su editor. Lo que dejes sin editar se agrega con valores predeterminados."
+          }
+        }
+      }
+    },
+    "Tap to edit" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocá para editar"
+          }
+        }
+      }
+    },
+    "That media doesn't fit this pack." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ese contenido no entra en este paquete."
+          }
+        }
+      }
+    },
+    "The first sticker is the pack's cover" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El primer sticker es la portada del paquete"
+          }
+        }
+      }
+    },
+    "This discards the Intelligent Cut and any edits made since." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esto descarta el Corte inteligente y los cambios hechos desde entonces."
+          }
+        }
+      }
+    },
+    "This pack" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete"
+          }
+        }
+      }
+    },
+    "This pack holds photos. Add a photo, or start a new pack." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete contiene fotos. Agregá una foto, o creá un paquete nuevo."
+          }
+        }
+      }
+    },
+    "This pack holds photos. Pick a pack for videos, or create a new one." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete contiene fotos. Elegí un paquete para videos, o creá uno nuevo."
+          }
+        }
+      }
+    },
+    "This pack holds videos. Add a video or GIF, or start a new pack." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete contiene videos. Agregá un video o GIF, o creá un paquete nuevo."
+          }
+        }
+      }
+    },
+    "This pack holds videos. Pick a pack for photos, or create a new one." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete contiene videos. Elegí un paquete para fotos, o creá uno nuevo."
+          }
+        }
+      }
+    },
+    "This pack holds the other kind of media" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete contiene el otro tipo de contenido"
+          }
+        }
+      }
+    },
+    "This pack mixes photos and videos" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete mezcla fotos y videos"
+          }
+        }
+      }
+    },
+    "This pack mixes photos and videos." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete mezcla fotos y videos."
+          }
+        }
+      }
+    },
+    "This pack mixes photos and videos. Remove the extras to export." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete mezcla fotos y videos. Quitá los que sobran para exportar."
+          }
+        }
+      }
+    },
+    "This pack was removed." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este paquete se eliminó."
+          }
+        }
+      }
+    },
+    "This removes the pack and all its stickers. You can't undo this." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esto elimina el paquete y todos sus stickers. No se puede deshacer."
+          }
+        }
+      }
+    },
+    "This removes the sticker from the pack. You can't undo this." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esto elimina el sticker del paquete. No se puede deshacer."
+          }
+        }
+      }
+    },
+    "This sticker has no editable source" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este sticker no tiene origen editable"
+          }
+        }
+      }
+    },
+    "This video couldn't be played." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No se pudo reproducir este video."
+          }
+        }
+      }
+    },
+    "This video has no duration." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este video no tiene duración."
+          }
+        }
+      }
+    },
+    "Trim" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recortar"
+          }
+        }
+      }
+    },
+    "Trim range" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rango de recorte"
+          }
+        }
+      }
+    },
+    "Try Again" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reintentar"
+          }
+        }
+      }
+    },
+    "Try choosing a different photo." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Probá elegir otra foto."
+          }
+        }
+      }
+    },
+    "Try choosing a different video." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Probá elegir otro video."
+          }
+        }
+      }
+    },
+    "Type your own" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Escribí los tuyos"
+          }
+        }
+      }
+    },
+    "Undo" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deshacer"
+          }
+        }
+      }
+    },
+    "Use Subject" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usar sujeto"
+          }
+        }
+      }
+    },
+    "Use this subject" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usar este sujeto"
+          }
+        }
+      }
+    },
+    "Use this subject target" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Destino para usar este sujeto"
+          }
+        }
+      }
+    },
+    "Uses this subject in the editor" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usa este sujeto en el editor"
+          }
+        }
+      }
+    },
+    "Version" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Versión"
+          }
+        }
+      }
+    },
+    "Video" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video"
+          }
+        }
+      }
+    },
+    "VisionKit couldn't find a subject to lift. Go back and refine with Restore, Erase, Rectangle, Lasso or Crop." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VisionKit no encontró ningún sujeto para levantar. Volvé y refiná con Restaurar, Borrar, Rectángulo, Lazo o Encuadrar."
+          }
+        }
+      }
+    },
+    "Welcome to Stickreate" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Te damos la bienvenida a Stickreate"
+          }
+        }
+      }
+    },
+    "WhatsApp imports one kind per pack. Remove the stickers that don't belong, or use Export Pack File from the pack menu to back it up." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "WhatsApp importa un solo tipo por paquete. Quitá los stickers que no correspondan o usá Exportar archivo de paquete desde el menú del paquete para respaldarlo."
+          }
+        }
+      }
+    },
+    "Whole image restored" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Imagen completa restaurada"
+          }
+        }
+      }
+    },
+    "Yes" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sí"
+          }
+        }
+      }
+    },
+    "1 sticker" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 sticker"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

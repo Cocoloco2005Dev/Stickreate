@@ -88,3 +88,23 @@ docs/                        This documentation
   duration equals the trimmed span exactly (no speed-up).
 - The animated encoder's RGBA buffer is **top-left row-major** (vImage), because libwebp
   expects row 0 = top row.
+
+## Additions in 0.20.0
+
+```
+Stickreate/
+  DesignSystem/            DS tokens (space/radius/type/color/motion), Haptic, shared
+                           EmptyState/LoadingState/SuccessLabel/StatusBanner, a11y announcements
+  Localizable.xcstrings    String Catalog (source en, es translations)
+  Services/Log.swift       os.Logger subsystem com.cocol.stickreate (encode/extraction/vision)
+  Services/SelfTest.swift  DEBUG-only synthetic end-to-end checks (launch arg -StickreateSelfTest)
+  Features/Debug/DebugView.swift   DEBUG-only hidden debug screen
+  Models/SelfTestReport.swift      DEBUG-only report Codable (Documents/selftest-report.json)
+```
+
+- **Persistence**: `PackStore` keeps `packs.json.bak`, quarantines a corrupt `packs.json` to
+  `packs.corrupt-<ts>.json`, recovers from the backup, writes atomically, and surfaces
+  `persistenceError` (shown in `RootView`). Blobs still live (base64) in `packs.json`.
+- **Import validation**: `PackArchive` enforces ≤30 stickers, single-kind, and per-entry (1 MB) /
+  total (20 MB) uncompressed caps.
+- **Self-test** is entirely `#if DEBUG`; it is absent from Release builds.

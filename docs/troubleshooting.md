@@ -66,3 +66,22 @@ Hard-won issues and their fixes. Useful when something breaks again.
 - Export: ZIP with `contents.json` (WhatsApp manifest) + `cover.png` + `N.webp` + txt files.
 - Import accepts `.wasticker` (new) and `.stickreatepack` (legacy JSON). `RootView` and
   `LibraryView` must both route those extensions to `PackArchive.importPack`.
+
+## SwiftUI `#Preview` pitfalls (overhaul)
+
+- A `#Preview` body is a `@ViewBuilder`: **never** use an explicit `return` (use `let …` + a
+  trailing view expression).
+- `.environment(\.accessibilityReduceTransparency, true)` does **not** compile — that environment
+  value is get-only and cannot be injected. Don't try to force Reduce Transparency in a preview.
+
+## DesignSystem state components take `String`
+
+- `EmptyState` / `LoadingState` / `StatusBanner` / `SuccessLabel` take `String` (so dynamic error
+  messages compose). Their Spanish translations only resolve once they accept `LocalizedStringKey`
+  or `String(localized:)`.
+
+## CI exit code 65
+
+- `xcodebuild` exits `65` on a compile error in the test build. Get the real errors with:
+  `gh run view <run-id> --log-failed | Select-String "error:"`. The workflow's concurrency group
+  cancels an in-flight run when a new commit is pushed to the same ref.

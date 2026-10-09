@@ -99,4 +99,142 @@ final class StickerGeometryTests: XCTestCase {
         XCTAssertEqual(under.width, -150, accuracy: accuracy)
         XCTAssertEqual(under.height, 0, accuracy: accuracy)
     }
+
+    // MARK: - Edge cases: degenerate sizes, extreme zoom/pan, letterbox corners
+
+    func testImageFrameShiftsCenterByPan() {
+        let canvas = CGSize(width: 300, height: 300)
+        let image = CGSize(width: 200, height: 100)
+        let frame = StickerGeometry.imageFrame(
+            canvas: canvas,
+            imageSize: image,
+            zoom: 1,
+            pan: CGSize(width: 10, height: -20)
+        )
+        XCTAssertEqual(frame.width, 300, accuracy: accuracy)
+        XCTAssertEqual(frame.height, 150, accuracy: accuracy)
+        XCTAssertEqual(frame.midX, 160, accuracy: accuracy)
+        XCTAssertEqual(frame.midY, 130, accuracy: accuracy)
+    }
+
+    func testImageFrameFitsTallImageByHeight() {
+        let canvas = CGSize(width: 400, height: 200)
+        let image = CGSize(width: 100, height: 400) // 1:4 portrait
+        let frame = StickerGeometry.imageFrame(canvas: canvas, imageSize: image, zoom: 1, pan: .zero)
+        XCTAssertEqual(frame.width, 50, accuracy: accuracy)
+        XCTAssertEqual(frame.height, 200, accuracy: accuracy)
+        XCTAssertEqual(frame.midX, 200, accuracy: accuracy)
+        XCTAssertEqual(frame.midY, 100, accuracy: accuracy)
+    }
+
+    func testImageFrameZeroZoomIsEmptyButCentered() {
+        let frame = StickerGeometry.imageFrame(
+            canvas: CGSize(width: 100, height: 100),
+            imageSize: CGSize(width: 10, height: 10),
+            zoom: 0,
+            pan: .zero
+        )
+        XCTAssertEqual(frame.width, 0, accuracy: accuracy)
+        XCTAssertEqual(frame.height, 0, accuracy: accuracy)
+        XCTAssertEqual(frame.midX, 50, accuracy: accuracy)
+        XCTAssertEqual(frame.midY, 50, accuracy: accuracy)
+    }
+
+    func testImageFrameExtremeZoomGrowsAroundCenter() {
+        let frame = StickerGeometry.imageFrame(
+            canvas: CGSize(width: 300, height: 300),
+            imageSize: CGSize(width: 200, height: 100),
+            zoom: 1000,
+            pan: .zero
+        )
+        XCTAssertEqual(frame.width, 300_000, accuracy: 0.5)
+        XCTAssertEqual(frame.height, 150_000, accuracy: 0.5)
+        XCTAssertEqual(frame.midX, 150, accuracy: accuracy)
+        XCTAssertEqual(frame.midY, 150, accuracy: accuracy)
+    }
+
+    func testNormalizedReturnsZeroForDegenerateFrames() {
+        XCTAssertEqual(StickerGeometry.normalized(CGPoint(x: 50, y: 50), in: .zero), .zero)
+        XCTAssertEqual(
+            StickerGeometry.normalized(
+                CGPoint(x: 50, y: 50),
+                in: CGRect(x: 10, y: 10, width: 0, height: 100)
+            ),
+            .zero
+        )
+    }
+
+    /// A point produced from normalized coordinates must invert exactly, even on
+    /// a letterboxed/zoomed/panned frame.
+    func testCanvasPointInvertsNormalizedOnTransformedFrame() {
+        let frame = StickerGeometry.imageFrame(
+            canvas: CGSize(width: 300, height: 300),
+            imageSize: CGSize(width: 200, height: 100),
+            zoom: 1,
+            pan: CGSize(width: 12, height: -8)
+        )
+        for xi in 0...5 {
+            for yi in 0...5 {
+                let x = CGFloat(xi) / 5
+                let y = CGFloat(yi) / 5
+                let point = StickerGeometry.canvasPoint(CGPoint(x: x, y: y), in: frame)
+                let back = StickerGeometry.normalized(point, in: frame)
+                XCTAssertEqual(back.x, x, accuracy: accuracy)
+                XCTAssertEqual(back.y, y, accuracy: accuracy)
+            }
+        }
+    }
+
+    /// Landscape image in a square canvas: the top/bottom canvas corners fall in
+    /// the letterbox and clamp to the image edges, while the centre maps to 0.5.
+    func testNormalizedClampsCanvasLetterboxCorners() {
+        let canvas = CGSize(width: 300, height: 300)
+        let image = CGSize(width: 200, height: 100)
+        let frame = StickerGeometry.imageFrame(canvas: canvas, imageSize: image, zoom: 1, pan: .zero)
+
+        let topLeft = StickerGeometry.normalized(CGPoint(x: 0, y: 0), in: frame)
+        XCTAssertEqual(topLeft.x, 0, accuracy: accuracy)
+        XCTAssertEqual(topLeft.y, 0, accuracy: accuracy) // clamped from -0.5
+
+        let bottomRight = StickerGeometry.normalized(CGPoint(x: 300, y: 300), in: frame)
+        XCTAssertEqual(bottomRight.x, 1, accuracy: accuracy)
+        XCTAssertEqual(bottomRight.y, 1, accuracy: accuracy) // clamped from 1.5
+
+        let center = StickerGeometry.normalized(CGPoint(x: 150, y: 150), in: frame)
+        XCTAssertEqual(center.x, 0.5, accuracy: accuracy)
+        XCTAssertEqual(center.y, 0.5, accuracy: accuracy)
+    }
+
+    func testClampedPanUsesSlackOnBothAxesWhenZoomedPastCanvas() {
+        let clamped = StickerGeometry.clampedPan(
+            CGSize(width: 9999, height: -9999),
+            canvas: CGSize(width: 300, height: 300),
+            imageSize: CGSize(width: 300, height: 300),
+            zoom: 3 // 900×900, slack 300 per axis
+        )
+        XCTAssertEqual(clamped.width, 300, accuracy: accuracy)
+        XCTAssertEqual(clamped.height, -300, accuracy: accuracy)
+    }
+
+    func testClampedPanIsZeroAtZeroZoom() {
+        let clamped = StickerGeometry.clampedPan(
+            CGSize(width: 50, height: 50),
+            canvas: CGSize(width: 100, height: 100),
+            imageSize: CGSize(width: 100, height: 100),
+            zoom: 0
+        )
+        XCTAssertEqual(clamped, .zero)
+    }
+
+    func testClampedPanReturnsInputUnchangedForDegenerateInputs() {
+        let value = CGSize(width: 33, height: -7)
+        XCTAssertEqual(
+            StickerGeometry.clampedPan(value, canvas: .zero, imageSize: CGSize(width: 10, height: 10), zoom: 1),
+            value
+        )
+        XCTAssertEqual(
+            StickerGeometry.clampedPan(value, canvas: CGSize(width: 100, height: 100), imageSize: .zero, zoom: 1),
+            value
+        )
+    }
 }
