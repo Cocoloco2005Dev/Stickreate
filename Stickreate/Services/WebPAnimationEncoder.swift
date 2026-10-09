@@ -177,6 +177,9 @@ enum WebPAnimationEncoder {
 
         var timestamp = 0
         let total = frames.count
+        // Announce the attempt immediately so the caller's bar moves as soon as
+        // encoding starts, then tick after every frame (never only at the end).
+        onProgress?(0)
         for index in 0..<total {
             var added = false
             autoreleasepool {

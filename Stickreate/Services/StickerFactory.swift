@@ -37,8 +37,11 @@ enum StickerFactory {
         onStage: ((StickerCreationStage) -> Void)? = nil
     ) throws -> StickerItem {
         onStage?(.compressing(0))
-        guard let stickerData = StickerEncoder.staticSticker(from: image),
-              let previewData = StickerEncoder.previewPNG(from: image, size: 512) else {
+        // Auto-fit a cut-out subject to fill the canvas; opaque photos and fully
+        // transparent images pass through unchanged.
+        let fitted = StickerEncoder.alphaFitted(image)
+        guard let stickerData = StickerEncoder.staticSticker(from: fitted),
+              let previewData = StickerEncoder.previewPNG(from: fitted, size: 512) else {
             throw Failure.failed("Couldn't encode this sticker.")
         }
         onStage?(.compressing(1.0))
@@ -126,6 +129,47 @@ enum StickerFactory {
             height: rect.height * height
         ).intersection(CGRect(x: 0, y: 0, width: width, height: height))
         guard !clamped.isEmpty, let cropped = cgImage.cropping(to: clamped.integral) else {
+            return image
+        }
+        return UIImage(cgImage: cropped)
+    }
+
+    /// Crops every frame to the union of their (padded) alpha bounds so a cut-out
+    /// subject fills the canvas uniformly — one shared box, so the animation never
+    /// jitters. No-ops unless every frame reports transparency AND shares one
+    /// pixel size (mixed-size GIF frames are left untouched).
+    private static func alphaFittedFrames(_ frames: [Frame]) -> [Frame] {
+        guard let first = frames.first?.image else { return frames }
+        let size = pixelSize(of: first)
+        guard size.width > 0,
+              frames.allSatisfy({ pixelSize(of: $0.image) == size }),
+              let union = StickerEncoder.alphaUnion(of: frames.map(\.image)) else {
+            return frames
+        }
+        let padded = StickerEncoder.paddedCropRect(union, margin: StickerEncoder.alphaMargin, in: first)
+        return frames.map { Frame(image: crop($0.image, toPixel: padded), duration: $0.duration) }
+    }
+
+    /// Pixel dimensions of an upright image, independent of its point `scale`.
+    private static func pixelSize(of image: UIImage) -> CGSize {
+        let oriented = image.upNormalized() ?? image
+        guard let cgImage = oriented.cgImage else { return .zero }
+        return CGSize(width: CGFloat(cgImage.width), height: CGFloat(cgImage.height))
+    }
+
+    /// Crops `image` to a top-left pixel rect, clamped to the image bounds.
+    private static func crop(_ image: UIImage, toPixel rect: CGRect) -> UIImage {
+        let oriented = image.upNormalized() ?? image
+        guard let cgImage = oriented.cgImage else { return image }
+        let bounds = CGRect(
+            x: 0,
+            y: 0,
+            width: CGFloat(cgImage.width),
+            height: CGFloat(cgImage.height)
+        )
+        let clamped = rect.intersection(bounds).integral
+        guard clamped.width >= 1, clamped.height >= 1,
+              let cropped = cgImage.cropping(to: clamped) else {
             return image
         }
         return UIImage(cgImage: cropped)
@@ -272,19 +316,23 @@ enum StickerFactory {
             usable = frames
         }
 
+        // One shared alpha-fit box for the whole clip: a cut-out subject fills
+        // the canvas without per-frame scale jitter. No-op when opaque.
+        let encoded = alphaFittedFrames(usable)
+
         onStage?(.compressing(0))
         #if DEBUG
         let encodeStarted = CFAbsoluteTimeGetCurrent()
         #endif
-        // Capture the preview source and count BEFORE encoding so `usable` has no
+        // Capture the preview source and count BEFORE encoding so `encoded` has no
         // use after the encode call. In an optimized build ARC can then release
         // the source frame set at that point, roughly halving the resident frame
         // memory during the encode ladder. (Fully freeing it also needs the
         // callers to stop holding their frames — tracked as a Phase 4b follow-up.)
-        guard let firstImage = usable.first?.image else { throw Failure.empty }
-        let frameCount = usable.count
+        guard let firstImage = encoded.first?.image else { throw Failure.empty }
+        let frameCount = encoded.count
         guard let stickerData = StickerEncoder.animatedSticker(
-            from: usable,
+            from: encoded,
             targetDuration: targetDuration,
             // Cap the encoder's in-flight fraction at 0.999: the only way this
             // path fails after a successful encode is a nil preview, and a failed
@@ -312,12 +360,11 @@ enum StickerFactory {
         return item
     }
 
-    /// Vision runs on every `maskStride`-th frame; the frames in between reuse
-    /// the nearest computed mask.
-    /// ponytail: N=3 keeps contour drift within ~2 frames at 24 fps (~83 ms)
-    /// while cutting Vision passes ~3×. Raise N for speed, lower it for accuracy
-    /// — only device runs can settle the trade-off.
-    private static let maskStride = 3
+    /// Vision runs on every frame so the cut contour tracks motion exactly.
+    /// ponytail: per-frame Vision is the accuracy-maximising default; the small
+    /// 256 px mask input keeps it affordable. Raise N only if a device profile
+    /// shows the per-frame pass dominating.
+    private static let maskStride = 1
 
     /// Longest side of the image handed to Vision. The resulting mask is scaled
     /// back up by `composite`, which always runs at full frame resolution.
@@ -337,9 +384,9 @@ enum StickerFactory {
     }
 
     /// Applies a subject mask to every frame so the cutout follows motion: one
-    /// Vision pass every `maskStride` frames, with the nearest computed mask
-    /// reused in between (and after a failed pass). Never throws and never
-    /// surfaces an error: if Vision fails, finds no subject, or times out it
+    /// Vision pass per frame (per `maskStride`), with the nearest successful mask
+    /// reused after a failed pass. Never throws and never surfaces an error: if
+    /// Vision fails, finds no subject, times out, or the caller cancels, it
     /// returns nil and the caller keeps the original frames.
     ///
     /// `onProgress` maps the anchor Vision passes and the per-frame composite
@@ -347,28 +394,36 @@ enum StickerFactory {
     private static func cutOut(_ frames: [Frame], onProgress: ((Double) -> Void)? = nil) async -> [Frame]? {
         guard !frames.isEmpty else { return nil }
         let timeout = cutOutTimeout(forFrameCount: frames.count)
-        return await withCheckedContinuation { (continuation: CheckedContinuation<[Frame]?, Never>) in
-            let gate = ResumeOnce(continuation)
-            // Ignore progress once the race is decided, so a late/timed-out work
-            // task can't push stale `.cutting` updates after the fallback.
-            let progress: ((Double) -> Void)? = onProgress.map { forward in
-                { value in if gate.isPending { forward(value) } }
+        let work = CancellableCutout()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<[Frame]?, Never>) in
+                let gate = ResumeOnce(continuation)
+                // Ignore progress once the race is decided, so a late/timed-out work
+                // task can't push stale `.cutting` updates after the fallback.
+                let progress: ((Double) -> Void)? = onProgress.map { forward in
+                    { value in if gate.isPending { forward(value) } }
+                }
+                let task = Task.detached(priority: .userInitiated) { () -> [Frame]? in
+                    await computeCutout(frames, onProgress: progress)
+                }
+                work.store(task)
+                // Deliver the result if it finishes first; the watchdog resumes `nil`
+                // (original frames) and cancels the work if it doesn't. `gate` makes
+                // the race safe: the continuation is resumed exactly once.
+                let watchdog = Task {
+                    try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    task.cancel()
+                    gate.resume(nil)
+                }
+                Task {
+                    gate.resume(await task.value)
+                    watchdog.cancel()
+                }
             }
-            let work = Task.detached(priority: .userInitiated) { () -> [Frame]? in
-                await computeCutout(frames, onProgress: progress)
-            }
-            // Deliver the result if it finishes first; the watchdog resumes `nil`
-            // (original frames) and cancels the work if it doesn't. `gate` makes
-            // the race safe: the continuation is resumed exactly once.
-            let watchdog = Task {
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                work.cancel()
-                gate.resume(nil)
-            }
-            Task {
-                gate.resume(await work.value)
-                watchdog.cancel()
-            }
+        } onCancel: {
+            // Forward the CALLER's cancellation to the detached cut so Intelligent
+            // Cut stops promptly when the user taps Cancel.
+            work.cancel()
         }
     }
 
@@ -496,6 +551,31 @@ enum StickerFactory {
             return nil
         }
         return UIImage(cgImage: cgImage)
+    }
+
+    /// Holds the detached cut-out task so the caller's cancellation can reach it.
+    /// Cancellation requested before the task is stored is remembered and applied
+    /// on `store`, closing the create/observe race.
+    private final class CancellableCutout: @unchecked Sendable {
+        private let lock = NSLock()
+        private var task: Task<[Frame]?, Never>?
+        private var cancelled = false
+
+        func store(_ task: Task<[Frame]?, Never>) {
+            lock.lock()
+            let alreadyCancelled = cancelled
+            if !alreadyCancelled { self.task = task }
+            lock.unlock()
+            if alreadyCancelled { task.cancel() }
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let task = self.task
+            lock.unlock()
+            task?.cancel()
+        }
     }
 
     /// Resumes a continuation at most once, so the work task and the watchdog can

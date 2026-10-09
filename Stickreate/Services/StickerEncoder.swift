@@ -97,9 +97,19 @@ enum StickerEncoder {
         // and jumps to exactly 1.0 only once a payload is actually returned.
         let plannedAttempts = max(1, candidates.count * animatedQualities.count)
         var attempt = 0
+        // Monotonic + rate-limited: per-frame/per-attempt reports are clamped so
+        // the bar never moves backwards, and intermediate frames inside the same
+        // ~50 ms window are dropped so we never flood the UI. The first report
+        // always goes through, so even a fast encode still ticks.
+        var accumulator = ProgressAccumulator()
+        var lastReport = CFAbsoluteTimeGetCurrent() - 1
         func report(_ frameFraction: Double) {
             let progress = (Double(attempt) + frameFraction) / Double(plannedAttempts)
-            onProgress?(min(0.999, progress))
+            let monotonic = accumulator.update(min(0.999, progress))
+            let now = CFAbsoluteTimeGetCurrent()
+            guard now - lastReport >= 1.0 / 20.0 else { return }
+            lastReport = now
+            onProgress?(monotonic)
         }
 
         #if DEBUG
@@ -128,6 +138,9 @@ enum StickerEncoder {
                     loopCount: loop,
                     quality: Double(quality) / 100.0
                 )
+                // Per-attempt tick: report the completed attempt even when the
+                // native encoder bailed before its first per-frame callback.
+                report(1.0)
                 attempt += 1
                 // 480 KB target is below the 500 KB hard cap, so this also
                 // guarantees WhatsApp compliance.
@@ -224,6 +237,112 @@ enum StickerEncoder {
                 options: options
             )
         }
+    }
+
+    // MARK: - Alpha fit
+
+    /// Padding (in pixels) added around the detected subject before cropping, so
+    /// antialiased edges and drop shadows are never clipped.
+    static let alphaMargin: CGFloat = 8
+
+    /// Alpha at or below this counts as transparent; a few noisy near-zero
+    /// samples must not defeat the "fully transparent" test.
+    private static let alphaThreshold: UInt8 = 8
+
+    /// Bounding box of the non-transparent pixels, in top-left image coordinates
+    /// (matching the pixel buffer, so it feeds `cgImage.cropping(to:)` directly).
+    /// Returns `nil` when the image is fully opaque (nothing to fit) or fully
+    /// transparent (no subject).
+    static func alphaBounds(of image: UIImage) -> CGRect? {
+        let oriented = image.upNormalized() ?? image
+        guard let cgImage = oriented.cgImage else { return nil }
+        let width = cgImage.width
+        let height = cgImage.height
+        guard width > 0, height > 0 else { return nil }
+
+        // Draw into a known RGBA8 premultiplied buffer: its first row is the
+        // image's TOP row (same orientation as the closed `assertRGBAIsTopLeft`
+        // check in WebPAnimationEncoder), so the scan below is top-left.
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(
+                data: raw.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        var sawOpaque = false
+        var sawTransparent = false
+        pixels.withUnsafeBufferPointer { buffer in
+            for y in 0..<height {
+                let row = y * bytesPerRow
+                for x in 0..<width {
+                    if buffer[row + x * 4 + 3] > alphaThreshold {
+                        sawOpaque = true
+                        if x < minX { minX = x }
+                        if x > maxX { maxX = x }
+                        if y < minY { minY = y }
+                        if y > maxY { maxY = y }
+                    } else {
+                        sawTransparent = true
+                    }
+                }
+            }
+        }
+        guard sawOpaque, sawTransparent else { return nil }
+        return CGRect(
+            x: minX,
+            y: minY,
+            width: maxX - minX + 1,
+            height: maxY - minY + 1
+        )
+    }
+
+    /// Expands `rect` by `margin` (pixels) and clamps it to the image's bounds,
+    /// so the padded crop can never ask for pixels outside the source.
+    static func paddedCropRect(_ rect: CGRect, margin: CGFloat, in image: UIImage) -> CGRect {
+        let oriented = image.upNormalized() ?? image
+        let width = CGFloat(oriented.cgImage?.width ?? Int((image.size.width * image.scale).rounded()))
+        let height = CGFloat(oriented.cgImage?.height ?? Int((image.size.height * image.scale).rounded()))
+        let imageBounds = CGRect(x: 0, y: 0, width: width, height: height)
+        let expanded = rect.insetBy(dx: -max(0, margin), dy: -max(0, margin))
+        let clamped = expanded.intersection(imageBounds)
+        return clamped.isNull ? imageBounds : clamped
+    }
+
+    /// Crops `image` to its (padded) alpha bounds when it has meaningful
+    /// transparency, so a small cut-out subject fills the canvas; returns the
+    /// image unchanged when it is opaque or fully transparent.
+    static func alphaFitted(_ image: UIImage) -> UIImage {
+        guard let bounds = alphaBounds(of: image) else { return image }
+        let oriented = image.upNormalized() ?? image
+        guard let cgImage = oriented.cgImage else { return image }
+        let crop = paddedCropRect(bounds, margin: alphaMargin, in: image).integral
+        guard crop.width >= 1, crop.height >= 1,
+              let cropped = cgImage.cropping(to: crop) else { return image }
+        return UIImage(cgImage: cropped)
+    }
+
+    /// Union of `alphaBounds` across `images`, or `nil` when none has meaningful
+    /// transparency. Used to crop a whole animation to ONE shared box so the
+    /// subject fills the canvas without per-frame scale jitter.
+    static func alphaUnion(of images: [UIImage]) -> CGRect? {
+        var union: CGRect?
+        for image in images {
+            guard let bounds = alphaBounds(of: image) else { continue }
+            union = union.map { $0.union(bounds) } ?? bounds
+        }
+        return union
     }
 
     // MARK: - Frame preparation
@@ -429,5 +548,52 @@ extension UIImage {
         return UIGraphicsImageRenderer(size: target, format: format).image { _ in
             draw(in: CGRect(origin: .zero, size: target))
         }
+    }
+}
+
+/// Composes the independent creation stages (extraction → cut → compress →
+/// saving) into ONE monotonically non-decreasing `0...1` fraction, so a progress
+/// bar can never jump backwards and can never reach 100% before the payload
+/// exists. Pure value type — no state beyond the last emitted value.
+struct ProgressAccumulator {
+    /// Ordered creation stages and the share of the overall bar each occupies.
+    /// The weights sum to 1, so `update(_:in:)` always yields a value in `0...1`.
+    enum Stage: CaseIterable {
+        case extraction
+        case cut
+        case compression
+        case saving
+
+        var weight: Double {
+            switch self {
+            case .extraction: 0.30
+            case .cut: 0.35
+            case .compression: 0.30
+            case .saving: 0.05
+            }
+        }
+
+        /// Start of this stage's slice of the overall `0...1` range.
+        var lowerBound: Double {
+            Stage.allCases
+                .prefix { $0 != self }
+                .reduce(0) { $0 + $1.weight }
+        }
+    }
+
+    private(set) var value: Double = 0
+
+    /// Clamps `value` into `0...1` and never lets the accumulator decrease, so
+    /// callers can forward raw per-stage fractions without ordering them.
+    @discardableResult
+    mutating func update(_ value: Double) -> Double {
+        self.value = max(self.value, min(max(value, 0), 1))
+        return self.value
+    }
+
+    /// Maps a stage-local `0...1` fraction into the composed overall fraction.
+    @discardableResult
+    mutating func update(_ fraction: Double, in stage: Stage) -> Double {
+        update(stage.lowerBound + stage.weight * min(max(fraction, 0), 1))
     }
 }

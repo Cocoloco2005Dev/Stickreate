@@ -67,6 +67,7 @@ struct StickerEditorView: View {
     // Apply / encode
     @State private var isSaving = false
     @State private var applyStage: StickerCreationStage?
+    @State private var creationTask: Task<Void, Never>?
 
     @State private var alertMessage: String?
     @State private var successPulse = 0
@@ -108,15 +109,15 @@ struct StickerEditorView: View {
             }
             .navigationTitle("Adjust")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarBackButtonHidden(true)
+            .toolbar {
+                CancelActionItem { cancel() }
+                PrimaryActionItem(title: "Apply", isDisabled: !hasEdits || isSaving) {
+                    apply()
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 if editor != nil {
                     controlLayer
-                }
-            }
-            .overlay {
-                if isSaving {
-                    busyOverlay(title: applyProgressText, subtitle: nil)
                 }
             }
             .alert("Something went wrong", isPresented: alertBinding) {
@@ -127,6 +128,7 @@ struct StickerEditorView: View {
             .haptic(.success, trigger: successPulse)
             .announceOnChange(of: applyStage.announcementPhase) { $0 }
         }
+        .creationProgressOverlay(isSaving, stage: applyStage, onCancel: cancelApply)
         .task { await load() }
         .fullScreenCover(isPresented: $showSubjectLift) { subjectLiftCover }
         .confirmationDialog(
@@ -894,13 +896,11 @@ struct StickerEditorView: View {
 
     // MARK: - Action bar
 
+    /// Secondary tool row: undo / redo only. Cancel and Apply live in the
+    /// navigation bar (the standardized placement), so the bottom bar stays a
+    /// pure tool layer.
     private var actionBar: some View {
         HStack(spacing: DS.Space.sm) {
-            Button("Cancel") { cancel() }
-                .fontWeight(.medium)
-                .foregroundStyle(DS.ColorRole.accent)
-                .frame(minWidth: DS.minTapTarget, minHeight: DS.minTapTarget, alignment: .leading)
-
             Spacer(minLength: 0)
 
             Button {
@@ -909,7 +909,7 @@ struct StickerEditorView: View {
             } label: {
                 Image(systemName: "arrow.uturn.backward")
                     .font(.body.weight(.medium))
-                    .frame(width: DS.minTapTarget, height: DS.minTapTarget)
+                    .frame(minWidth: DS.minTapTarget, minHeight: DS.minTapTarget)
             }
             .buttonStyle(.glass)
             .disabled(!(editor?.canUndo ?? false))
@@ -921,19 +921,13 @@ struct StickerEditorView: View {
             } label: {
                 Image(systemName: "arrow.uturn.forward")
                     .font(.body.weight(.medium))
-                    .frame(width: DS.minTapTarget, height: DS.minTapTarget)
+                    .frame(minWidth: DS.minTapTarget, minHeight: DS.minTapTarget)
             }
             .buttonStyle(.glass)
             .disabled(!(editor?.canRedo ?? false))
             .accessibilityLabel("Redo")
 
             Spacer(minLength: 0)
-
-            Button("Apply") { apply() }
-                .buttonStyle(.glassProminent)
-                .disabled(!hasEdits || isSaving)
-                .frame(minWidth: DS.minTapTarget, minHeight: DS.minTapTarget, alignment: .trailing)
-                .accessibilityLabel("Apply changes")
         }
         .font(.body)
     }
@@ -981,54 +975,6 @@ struct StickerEditorView: View {
             selectionStart = nil
             selectionRect = nil
             lassoPoints = []
-        }
-    }
-
-    // MARK: - Busy overlay
-
-    private func busyOverlay(title: String, subtitle: String?) -> some View {
-        ZStack {
-            Color.black.opacity(0.12)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-
-            VStack(spacing: DS.Space.md) {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-
-                Text(title)
-                    .font(DS.TextRole.supporting.weight(.medium))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-
-                if let subtitle {
-                    Text(subtitle)
-                        .font(DS.TextRole.caption)
-                        .foregroundStyle(.white.opacity(0.75))
-                        .multilineTextAlignment(.center)
-                }
-            }
-            .padding(.horizontal, DS.Space.xxl)
-            .padding(.vertical, DS.Space.xl)
-            .frame(maxWidth: 260)
-            .background(
-                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                    .fill(Color.black.opacity(0.72))
-            )
-        }
-        .transition(.opacity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(title)
-    }
-
-    /// `StickerCreationStage.label` already carries the exact copy and the
-    /// percentage for every determinate stage, `.compressing` included.
-    private var applyProgressText: String {
-        guard let stage = applyStage else { return "Preparing sticker…" }
-        switch stage {
-        case .loading: return "Preparing sticker…"
-        case .extracting, .cutting, .compressing, .saving, .done: return stage.label
         }
     }
 
@@ -1083,7 +1029,7 @@ struct StickerEditorView: View {
 
         let source = self.source
 
-        Task {
+        creationTask = Task {
             do {
                 // Encode off the main actor so the stage overlay can update.
                 let sticker = try await Task.detached(priority: .userInitiated) {
@@ -1093,16 +1039,30 @@ struct StickerEditorView: View {
                         }
                     }
                 }.value
+                if Task.isCancelled { return }
+                isSaving = false
+                applyStage = nil
                 successPulse += 1
                 onDone(sticker)
                 dismiss()
             } catch {
+                if Task.isCancelled { return }
                 isSaving = false
                 applyStage = nil
                 alertMessage = (error as? LocalizedError)?.errorDescription
                     ?? error.localizedDescription
             }
         }
+    }
+
+    /// Cancels an in-flight encode and clears the overlay. The static encode is
+    /// synchronous, so this mostly discards the result; see the service-hook note
+    /// for true mid-encode cancellation.
+    private func cancelApply() {
+        creationTask?.cancel()
+        creationTask = nil
+        isSaving = false
+        applyStage = nil
     }
 
     private var alertBinding: Binding<Bool> {

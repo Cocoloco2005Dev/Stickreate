@@ -38,8 +38,12 @@ struct SubjectLiftView: View {
             .navigationTitle("Lift Subject")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                CancelActionItem { dismiss() }
+                PrimaryActionItem(
+                    title: "Use Subject",
+                    isDisabled: model.previewImage == nil
+                ) {
+                    confirmLifted()
                 }
             }
             .safeAreaInset(edge: .bottom) { bottomBar }
@@ -84,11 +88,15 @@ struct SubjectLiftView: View {
                     .accessibilityLabel("Preview mode")
                     .accessibilityHint("Switches the preview between the lifted cut-out and the original photo")
 
-                    Button("Use Subject") { confirmLifted() }
-                        .buttonStyle(.glassProminent)
-                        .frame(maxWidth: .infinity, minHeight: DS.minTapTarget)
-                        .disabled(model.previewImage == nil)
-                        .accessibilityHint("Uses the previewed subject in the editor")
+                    if showsOriginal {
+                        Text("Showing the original photo.")
+                            .font(DS.TextRole.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Tap Use Subject to lift the previewed subject.")
+                            .font(DS.TextRole.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }

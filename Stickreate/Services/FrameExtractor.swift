@@ -137,7 +137,13 @@ enum FrameExtractor {
                 onProgress: onProgress
             )
         }
-        var frames = try await task.value
+        // Detached tasks don't inherit cancellation, so forward the caller's
+        // cancellation to the decode task explicitly and end promptly.
+        var frames = try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
 
         // If a decode failed for trailing targets, repeat the last frame so the
         // summed duration still equals the span.
@@ -190,6 +196,7 @@ enum FrameExtractor {
         var frames: [Frame] = []
         frames.reserveCapacity(times.count)
         for (index, time) in times.enumerated() {
+            if Task.isCancelled { throw CancellationError() }
             if let result = try? await generator.image(at: time) {
                 let frame = autoreleasepool {
                     Frame(image: UIImage(cgImage: result.image), duration: frameDuration)
@@ -240,6 +247,7 @@ enum FrameExtractor {
         var index = 0
         var kept = 0
         while index < total {
+            if Task.isCancelled { throw CancellationError() }
             let frame = autoreleasepool { () -> Frame? in
                 guard let cgImage = CGImageSourceCreateImageAtIndex(source, index, nil) else { return nil }
                 let delay = max(keptDelays[kept], Limits.minFrameDuration)

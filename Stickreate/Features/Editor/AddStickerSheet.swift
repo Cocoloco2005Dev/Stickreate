@@ -22,6 +22,9 @@ struct AddStickerSheet: View {
     @State private var isProcessing = false
     @State private var currentStage: StickerCreationStage?
     @State private var committingID: UUID?
+    @State private var commitIndex = 0
+    @State private var commitTotal = 0
+    @State private var creationTask: Task<Void, Never>?
     @State private var notice: Notice?
     @State private var successPulse = 0
     @State private var editingItem: QueueItem?
@@ -132,18 +135,14 @@ struct AddStickerSheet: View {
                 .navigationTitle("Add Stickers")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
-                            .disabled(isProcessing)
-                    }
+                    CancelActionItem(isDisabled: isProcessing) { dismiss() }
                     // No Add action until there is something in the queue.
                     if !queue.isEmpty {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Add \(queue.count)") {
-                                Task { await commit() }
-                            }
-                            .buttonStyle(.glassProminent)
-                            .disabled(isProcessing || isImporting || remaining == 0)
+                        PrimaryActionItem(
+                            title: "Add \(queue.count)",
+                            isDisabled: isProcessing || isImporting || remaining == 0
+                        ) {
+                            startCommit()
                         }
                     }
                 }
@@ -187,6 +186,13 @@ struct AddStickerSheet: View {
         } message: {
             Text(notice?.message ?? "")
         }
+        .creationProgressOverlay(
+            isProcessing,
+            stage: currentStage,
+            title: "Adding stickers",
+            detail: commitDetail,
+            onCancel: cancelCommit
+        )
         .haptic(.success, trigger: successPulse)
         .haptic(.error, trigger: notice)
         .announceOnChange(of: currentStage.announcementPhase) { $0 }
@@ -372,10 +378,6 @@ struct AddStickerSheet: View {
         VStack(spacing: 0) {
             queueHeader
 
-            if isProcessing {
-                commitBanner
-            }
-
             List {
                 ForEach(queue) { item in
                     queueRow(item)
@@ -386,32 +388,10 @@ struct AddStickerSheet: View {
         }
     }
 
-    /// Shows the current item's creation stage while the queue is committed.
-    private var commitBanner: some View {
-        HStack(spacing: 12) {
-            if let fraction = currentStage?.fraction {
-                ProgressView(value: min(max(fraction, 0), 1))
-                    .progressViewStyle(.circular)
-            } else {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            Text(currentStage?.label ?? "Adding…")
-                .font(.subheadline)
-
-            Spacer(minLength: 0)
-        }
-        .padding(DS.Space.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            DS.ColorRole.contentSurface,
-            in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
-        )
-        .padding(.horizontal, DS.Space.lg)
-        .padding(.bottom, DS.Space.sm)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(currentStage?.label ?? "Adding")
+    /// "Item N of M" line shown inside the shared creation-progress card.
+    private var commitDetail: String? {
+        guard commitTotal > 0 else { return nil }
+        return "Item \(max(1, commitIndex)) of \(commitTotal)"
     }
 
     private var queueHeader: some View {
@@ -680,6 +660,22 @@ struct AddStickerSheet: View {
 
     // MARK: - Commit
 
+    /// Starts the commit in a cancellable task so the progress card's Cancel can
+    /// stop it.
+    private func startCommit() {
+        creationTask = Task { await commit() }
+    }
+
+    /// Cancels an in-flight commit. The queue is untouched past the current item,
+    /// so everything not yet added (and its edits) survives for a retry.
+    private func cancelCommit() {
+        creationTask?.cancel()
+        creationTask = nil
+        isProcessing = false
+        currentStage = nil
+        committingID = nil
+    }
+
     @MainActor
     private func commit() async {
         guard !queue.isEmpty else { return }
@@ -690,19 +686,26 @@ struct AddStickerSheet: View {
         }
 
         isProcessing = true
+        commitTotal = queue.count
+        commitIndex = 0
         defer {
             isProcessing = false
             currentStage = nil
             committingID = nil
+            commitIndex = 0
+            commitTotal = 0
         }
 
         // Iterate a snapshot and drop each item only after it is added, so a
-        // failure keeps the remaining queue (and their edits) intact.
+        // failure (or a cancel) keeps the remaining queue and their edits intact.
         for item in queue {
+            if Task.isCancelled { return }
             do {
+                commitIndex += 1
                 committingID = item.id
                 currentStage = .loading
                 var sticker = try await resolvedSticker(for: item)
+                if Task.isCancelled { return }
                 // Respect the user's "Keep original sources" preference: when
                 // off, don't persist the original media (the sticker then isn't
                 // re-editable). The source is written earlier while editing, so
@@ -718,11 +721,13 @@ struct AddStickerSheet: View {
                 try store.add(sticker, to: packID)
                 queue.removeAll { $0.id == item.id }
             } catch {
+                if Task.isCancelled { return }
                 presentError(error.localizedDescription)
                 return
             }
         }
 
+        if Task.isCancelled { return }
         successPulse += 1
         dismiss()
     }

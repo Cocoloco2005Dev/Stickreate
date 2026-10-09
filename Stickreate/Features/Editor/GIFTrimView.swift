@@ -51,6 +51,7 @@ struct GIFTrimView: View {
     @State private var stage: StickerCreationStage?
     @State private var errorMessage: String?
     @State private var successPulse = 0
+    @State private var creationTask: Task<Void, Never>?
 
     /// Fixed UI tick; the delay-aware accumulator advances the frame index, so
     /// frames are shown for their real GIF delays rather than the tick length.
@@ -119,6 +120,7 @@ struct GIFTrimView: View {
         .onChange(of: lowerBound) { _, _ in handleSelectionChange() }
         .onChange(of: upperBound) { _, _ in handleSelectionChange() }
         .onReceive(previewTimer) { _ in tickPlayback() }
+        .creationProgressOverlay(isCreating, stage: stage, onCancel: cancelCreation)
         .haptic(.success, trigger: successPulse)
         .announceOnChange(of: stage.announcementPhase) { $0 }
         .alert(
@@ -138,24 +140,12 @@ struct GIFTrimView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button {
-                goBack()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .fontWeight(.semibold)
-            }
-            .tint(.white)
-            .disabled(isCreating)
-            .accessibilityLabel(backLabel)
-        }
-
-        ToolbarItem(placement: .confirmationAction) {
-            Button(step == .background ? "Apply" : "Next") {
-                advance()
-            }
-            .fontWeight(.semibold)
-            .disabled(frames == nil || isCreating || (step == .trim && clipLength <= 0))
+        BackActionItem(label: backLabel, isDisabled: isCreating) { goBack() }
+        PrimaryActionItem(
+            title: step == .background ? "Apply" : "Next",
+            isDisabled: frames == nil || isCreating || (step == .trim && clipLength <= 0)
+        ) {
+            advance()
         }
     }
 
@@ -176,15 +166,7 @@ struct GIFTrimView: View {
                     BackgroundChoiceView(previewImage: currentImage, choice: $backgroundChoice)
                         .background(Color(uiColor: .systemBackground))
                 }
-
-                if isCreating {
-                    progressBanner
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.top, DS.Space.md)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
             }
-            .animation(reduceMotion ? nil : DS.Motion.standard, value: isCreating)
         } else if isLoading {
             LoadingState(title: "Loading GIF…")
         } else {
@@ -396,43 +378,6 @@ struct GIFTrimView: View {
         }
     }
 
-    // MARK: - Progress banner
-
-    private var progressBanner: some View {
-        HStack(spacing: DS.Space.md) {
-            stageIndicator
-
-            Text(stageLabel)
-                .font(DS.TextRole.supporting.weight(.semibold))
-                .foregroundStyle(.white)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, DS.Space.lg)
-        .padding(.vertical, DS.Space.md)
-        .background(.black.opacity(0.8), in: Capsule())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(stageLabel)
-    }
-
-    @ViewBuilder
-    private var stageIndicator: some View {
-        if let fraction = stage?.fraction {
-            ProgressView(value: min(max(fraction, 0), 1))
-                .progressViewStyle(.circular)
-                .controlSize(.small)
-                .tint(.white)
-        } else {
-            ProgressView()
-                .controlSize(.small)
-                .tint(.white)
-        }
-    }
-
-    private var stageLabel: String {
-        stage?.label ?? "Preparing…"
-    }
-
     // MARK: - Loading
 
     @MainActor
@@ -588,7 +533,7 @@ struct GIFTrimView: View {
         stage = .loading
         isPlaying = false
 
-        Task {
+        creationTask = Task {
             do {
                 let sticker = try await StickerFactory.makeAnimatedSticker(
                     fromGIF: source,
@@ -602,15 +547,28 @@ struct GIFTrimView: View {
                         }
                     }
                 )
+                if Task.isCancelled { return }
                 isCreating = false
+                stage = nil
                 successPulse += 1
                 onDone(sticker)
                 dismiss()
             } catch {
+                if Task.isCancelled { return }
                 isCreating = false
+                stage = nil
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Cancels the running encode and resumes the preview.
+    private func cancelCreation() {
+        creationTask?.cancel()
+        creationTask = nil
+        isCreating = false
+        stage = nil
+        isPlaying = !reduceMotion
     }
 
     private func seconds(_ value: TimeInterval) -> String {

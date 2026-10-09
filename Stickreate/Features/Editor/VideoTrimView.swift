@@ -67,6 +67,7 @@ struct VideoTrimView: View {
     @State private var stage: StickerCreationStage?
     @State private var errorMessage: String?
     @State private var successPulse = 0
+    @State private var creationTask: Task<Void, Never>?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -111,6 +112,7 @@ struct VideoTrimView: View {
         .onChange(of: lowerBound) { _, _ in handleSelectionChange() }
         .onChange(of: upperBound) { _, _ in handleSelectionChange() }
         .onDisappear { teardownPlayer() }
+        .creationProgressOverlay(isCreating, stage: stage, onCancel: cancelCreation)
         .haptic(.success, trigger: successPulse)
         .announceOnChange(of: stage.announcementPhase) { $0 }
         .alert(
@@ -130,24 +132,12 @@ struct VideoTrimView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button {
-                goBack()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .fontWeight(.semibold)
-            }
-            .tint(.white)
-            .disabled(isCreating)
-            .accessibilityLabel(backLabel)
-        }
-
-        ToolbarItem(placement: .confirmationAction) {
-            Button(step == .background ? "Apply" : "Next") {
-                advance()
-            }
-            .fontWeight(.semibold)
-            .disabled(draft == nil || isCreating || (step == .trim && clipLength <= 0))
+        BackActionItem(label: backLabel, isDisabled: isCreating) { goBack() }
+        PrimaryActionItem(
+            title: step == .background ? "Apply" : "Next",
+            isDisabled: draft == nil || isCreating || (step == .trim && clipLength <= 0)
+        ) {
+            advance()
         }
     }
 
@@ -168,15 +158,7 @@ struct VideoTrimView: View {
                     BackgroundChoiceView(previewImage: playheadImage, choice: $backgroundChoice)
                         .background(Color(uiColor: .systemBackground))
                 }
-
-                if isCreating {
-                    progressBanner
-                        .padding(.horizontal, DS.Space.lg)
-                        .padding(.top, DS.Space.md)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
             }
-            .animation(reduceMotion ? nil : DS.Motion.standard, value: isCreating)
         } else if isLoading {
             LoadingState(title: "Loading video…")
         } else {
@@ -385,44 +367,6 @@ struct VideoTrimView: View {
 
             Spacer(minLength: 0)
         }
-    }
-
-    // MARK: - Progress banner (top, inline — never covers the caption below)
-
-    private var progressBanner: some View {
-        HStack(spacing: DS.Space.md) {
-            stageIndicator
-
-            Text(stageLabel)
-                .font(DS.TextRole.supporting.weight(.semibold))
-                .foregroundStyle(.white)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, DS.Space.lg)
-        .padding(.vertical, DS.Space.md)
-        .background(.black.opacity(0.8), in: Capsule())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(stageLabel)
-    }
-
-    @ViewBuilder
-    private var stageIndicator: some View {
-        if let fraction = stage?.fraction {
-            // Determinate stages only; `.compressing` is indeterminate.
-            ProgressView(value: min(max(fraction, 0), 1))
-                .progressViewStyle(.circular)
-                .controlSize(.small)
-                .tint(.white)
-        } else {
-            ProgressView()
-                .controlSize(.small)
-                .tint(.white)
-        }
-    }
-
-    private var stageLabel: String {
-        stage?.label ?? "Preparing…"
     }
 
     // MARK: - Loading
@@ -737,7 +681,7 @@ struct VideoTrimView: View {
         player?.pause()
         playback.isPlaying = false
 
-        Task {
+        creationTask = Task {
             do {
                 let sticker = try await StickerFactory.makeAnimatedSticker(
                     from: draft,
@@ -753,14 +697,33 @@ struct VideoTrimView: View {
                         }
                     }
                 )
+                if Task.isCancelled { return }
                 isCreating = false
+                stage = nil
                 successPulse += 1
                 onDone(sticker)
                 dismiss()
             } catch {
+                if Task.isCancelled { return }
                 isCreating = false
+                stage = nil
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    /// Cancels the running encode and resumes the preview. Frame extraction and
+    /// the Vision cut observe cancellation in the services; a synchronous WebP
+    /// encode cannot be interrupted mid-ladder, so cancel lands at the next
+    /// stage boundary (see the service-hook note).
+    private func cancelCreation() {
+        creationTask?.cancel()
+        creationTask = nil
+        isCreating = false
+        stage = nil
+        if !reduceMotion {
+            player?.playImmediately(atRate: 1.0)
+            playback.isPlaying = true
         }
     }
 

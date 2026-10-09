@@ -270,11 +270,23 @@ struct LibraryView: View {
     private var grid: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DS.Space.section) {
+                librarySummary
+
                 ForEach(groups) { group in
                     VStack(alignment: .leading, spacing: DS.Space.md) {
-                        Text(group.title)
-                            .font(DS.TextRole.section)
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: DS.Space.sm) {
+                            Text(group.title)
+                                .font(DS.TextRole.section)
+                                .foregroundStyle(.secondary)
+
+                            Spacer(minLength: 0)
+
+                            Text("\(group.packs.count)")
+                                .font(DS.TextRole.footnote.monospacedDigit())
+                                .foregroundStyle(.tertiary)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(group.title), \(group.packs.count) packs")
 
                         LazyVGrid(columns: columns, spacing: DS.Space.lg) {
                             ForEach(group.packs) { pack in
@@ -292,6 +304,23 @@ struct LibraryView: View {
             }
             .padding(DS.Space.lg)
         }
+    }
+
+    /// Compact library totals, so the top of the grid carries real counts
+    /// instead of starting straight into the folder sections.
+    private var librarySummary: some View {
+        let packCount = store.packs.count
+        let stickerCount = store.packs.reduce(0) { $0 + $1.stickers.count }
+        return HStack(spacing: DS.Space.xs) {
+            Text("\(packCount) \(packCount == 1 ? "pack" : "packs")")
+            Text("·")
+            Text("\(stickerCount) \(stickerCount == 1 ? "sticker" : "stickers")")
+            Spacer(minLength: 0)
+        }
+        .font(DS.TextRole.footnote)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(packCount) packs, \(stickerCount) stickers")
     }
 
     private var filteredPacks: [StickerPack] {

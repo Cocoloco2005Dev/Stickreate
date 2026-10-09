@@ -167,7 +167,7 @@ struct PackEditorView: View {
             VStack(alignment: .leading, spacing: DS.Space.lg) {
                 header(for: pack)
 
-                exportAction(for: pack)
+                exportHintRow(for: pack)
 
                 LazyVGrid(columns: columns, spacing: DS.Space.md) {
                     ForEach(pack.stickers) { item in
@@ -207,16 +207,35 @@ struct PackEditorView: View {
     }
 
     private func header(for pack: StickerPack) -> some View {
-        VStack(alignment: .leading, spacing: DS.Space.xs) {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
             HStack(spacing: DS.Space.sm) {
                 Label(kindLabel(for: pack), systemImage: kindSymbol(for: pack))
                 Spacer()
                 Text("\(pack.stickers.count) of \(Limits.maxStickers)")
             }
+            .accessibilityElement(children: .combine)
+
+            // Readiness toward WhatsApp's minimum, so the area above a short
+            // grid carries real information instead of a void.
+            if needsMoreStickers(pack) {
+                ProgressView(
+                    value: Double(min(pack.stickers.count, Limits.minStickers)),
+                    total: Double(Limits.minStickers)
+                )
+                .progressViewStyle(.linear)
+                .accessibilityLabel("Progress to WhatsApp-ready")
+                .accessibilityValue(
+                    "\(min(pack.stickers.count, Limits.minStickers)) of \(Limits.minStickers) stickers"
+                )
+            }
         }
         .font(DS.TextRole.supporting)
         .foregroundStyle(.secondary)
-        .accessibilityElement(children: .combine)
+    }
+
+    /// True when the pack is a single kind but still short of WhatsApp's minimum.
+    private func needsMoreStickers(_ pack: StickerPack) -> Bool {
+        !pack.isMixed && pack.stickers.count < Limits.minStickers
     }
 
     /// Kind from the actual stickers: a sticker's preview is always a still, so
@@ -250,21 +269,13 @@ struct PackEditorView: View {
         .padding(.top, DS.Space.xs)
     }
 
-    // MARK: - Primary export action
+    // MARK: - Export guidance
 
+    /// Informational line shown while the pack can't be exported yet. The single
+    /// primary "Add to WhatsApp" action lives in the navigation bar.
     @ViewBuilder
-    private func exportAction(for pack: StickerPack) -> some View {
-        if canExport {
-            Button {
-                showingExport = true
-            } label: {
-                Label("Add to WhatsApp", systemImage: "plus.message")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, DS.Space.xs)
-            }
-            .buttonStyle(.glassProminent)
-            .accessibilityHint("Opens the WhatsApp sticker import")
-        } else {
+    private func exportHintRow(for pack: StickerPack) -> some View {
+        if !canExport {
             Label(exportHint(for: pack), systemImage: "info.circle")
                 .font(DS.TextRole.footnote)
                 .foregroundStyle(.secondary)
@@ -389,8 +400,8 @@ struct PackEditorView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        // The only add affordance is the dashed tile in the grid, so the bar
-        // just carries the options menu (kept separate from anything else).
+        // The bar carries the options menu plus the single primary action. The
+        // only add affordance is the dashed tile in the grid.
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Button("Rename…", systemImage: "pencil") {
@@ -401,8 +412,8 @@ struct PackEditorView: View {
                     showingFolder = true
                 }
 
-                // The prominent button above the grid is the WhatsApp import, so
-                // this menu only carries the `.stickreatepack` backup file.
+                // The toolbar primary is the WhatsApp import, so this menu only
+                // carries the `.stickreatepack` backup file.
                 Button("Export Pack File…", systemImage: "square.and.arrow.up") {
                     exportFile()
                 }
@@ -416,6 +427,12 @@ struct PackEditorView: View {
                 Label("More", systemImage: "ellipsis.circle")
             }
             .accessibilityLabel("Pack options")
+        }
+
+        if canExport {
+            PrimaryActionItem(title: "Add to WhatsApp") {
+                showingExport = true
+            }
         }
     }
 

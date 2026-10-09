@@ -22,6 +22,12 @@ struct ExportSheet: View {
 
     private var pack: StickerPack? { store.pack(with: packID) }
 
+    /// A single-kind, non-empty pack can be handed to WhatsApp.
+    private var canExport: Bool {
+        guard let pack else { return false }
+        return !pack.isMixed && !pack.stickers.isEmpty
+    }
+
     @MainActor private var isWhatsAppInstalled: Bool { WhatsAppExporter.isWhatsAppInstalled }
 
     var body: some View {
@@ -49,8 +55,15 @@ struct ExportSheet: View {
             .navigationTitle("Add to WhatsApp")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                CancelActionItem { dismiss() }
+
+                if let pack, canExport {
+                    PrimaryActionItem(
+                        title: "Add to WhatsApp",
+                        isDisabled: isExported
+                    ) {
+                        export(pack)
+                    }
                 }
             }
         }
@@ -175,14 +188,10 @@ struct ExportSheet: View {
                 SuccessLabel(title: "Added to WhatsApp")
                     .transition(.opacity.combined(with: .scale))
             } else {
-                Button {
-                    export(pack)
-                } label: {
-                    Label("Add to WhatsApp", systemImage: "plus.message")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, DS.Space.xs)
-                }
-                .buttonStyle(.glassProminent)
+                Text("This pack is ready. Tap Add to WhatsApp to send it to the app.")
+                    .font(DS.TextRole.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
 
             whatsAppFootnote

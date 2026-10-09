@@ -114,18 +114,11 @@ struct ImportMediaSheet: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel") { onDone() }
-                .disabled(isBusy)
-        }
+        CancelActionItem(isDisabled: isBusy) { onDone() }
 
         if let pack = selectedPack {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Add to \(pack.name)") {
-                    performAdd()
-                }
-                .buttonStyle(.glassProminent)
-                .disabled(isBusy)
+            PrimaryActionItem(title: "Add to \(pack.name)", isDisabled: isBusy) {
+                performAdd()
             }
         }
     }

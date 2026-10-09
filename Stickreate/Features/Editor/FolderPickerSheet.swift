@@ -69,16 +69,11 @@ struct FolderPickerSheet: View {
             .navigationTitle("Folder")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        savePulse += 1
-                        onSave(trimmed)
-                        dismiss()
-                    }
-                    .buttonStyle(.glassProminent)
+                CancelActionItem { dismiss() }
+                PrimaryActionItem(title: "Save") {
+                    savePulse += 1
+                    onSave(trimmed)
+                    dismiss()
                 }
             }
         }

@@ -15,6 +15,8 @@ struct BackgroundChoiceView: View {
 
     var body: some View {
         VStack(spacing: DS.Space.xl) {
+            Spacer(minLength: 0)
+
             Text("Keep the background or lift the subject with Intelligent Cut.")
                 .font(DS.TextRole.supporting)
                 .foregroundStyle(.secondary)
@@ -35,7 +37,6 @@ struct BackgroundChoiceView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.top, DS.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
