@@ -1,18 +1,22 @@
 import SwiftUI
 
+// ponytail: components take `String` (not LocalizedStringKey) so dynamic error
+// messages compose. When the String Catalog lands, switch to LocalizedStringKey
+// at literal call sites or `String(localized:)`.
+
 /// Shared empty state. Wraps the HIG `ContentUnavailableView` and standardizes
 /// the framing so every empty screen reads the same: one symbol, one title, one
 /// short description, and (at most) one prominent action.
 struct EmptyState<Actions: View>: View {
     private let symbol: String
-    private let title: LocalizedStringKey
-    private let message: LocalizedStringKey
+    private let title: String
+    private let message: String
     private let actions: Actions
 
     init(
         symbol: String,
-        title: LocalizedStringKey,
-        message: LocalizedStringKey,
+        title: String,
+        message: String,
         @ViewBuilder actions: () -> Actions
     ) {
         self.symbol = symbol
@@ -35,7 +39,7 @@ struct EmptyState<Actions: View>: View {
 
 extension EmptyState where Actions == EmptyView {
     /// Empty state with no action buttons.
-    init(symbol: String, title: LocalizedStringKey, message: LocalizedStringKey) {
+    init(symbol: String, title: String, message: String) {
         self.init(symbol: symbol, title: title, message: message) { EmptyView() }
     }
 }
@@ -44,7 +48,7 @@ extension EmptyState where Actions == EmptyView {
 /// ad-hoc `ProgressView(…).background(.material)` scrims so no custom bar/sheet
 /// material is introduced.
 struct LoadingState: View {
-    let title: LocalizedStringKey
+    let title: String
 
     var body: some View {
         VStack(spacing: DS.Space.md) {
@@ -63,7 +67,7 @@ struct LoadingState: View {
 /// Inline success confirmation ("Added to WhatsApp", "Saved"). Uses the accent,
 /// never a brand-green.
 struct SuccessLabel: View {
-    let title: LocalizedStringKey
+    let title: String
 
     var body: some View {
         Label(title, systemImage: "checkmark.circle.fill")
@@ -78,7 +82,7 @@ struct SuccessLabel: View {
 /// content-layer surface (opaque), never glass, and never a substitute for the
 /// one prominent action on the screen.
 struct StatusBanner: View {
-    let title: LocalizedStringKey
+    let title: String
 
     var body: some View {
         HStack(spacing: DS.Space.sm) {
