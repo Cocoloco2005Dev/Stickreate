@@ -29,7 +29,7 @@ Branch flow: `overhaul/audit` (Phases 1–2) → `overhaul/p0-fixes` (Phase 4a) 
 - **Partial / open**:
   - **P0-2** encoder memory: pass-through for already-512×512 `.up` frames + capture preview before encode (Release ARC can drop the source set at the encode call). **Full single-resident fix requires an ownership refactor across `StickerFactory` + callers and a real device measurement** → Phase 4b/6. Video frames are non-square so the pass-through rarely applies; the win here is the early release.
   - **P0-3** app icon: copyrighted art; **deferred by user** — must be replaced before submission (App Review 5.2.1).
-- **Verification**: no local Xcode (Windows). Compile + unit tests verified by CI on `macos-15` via the PR. Pending CI result.
+- **Verification**: no local Xcode (Windows). **CI green** on `macos-15` — run [`37886270297`](https://github.com/Cocoloco2005Dev/Stickreate/actions/runs/37886270297): Generate project ✓, Resolve packages ✓, **Run tests ✓**, Archive ✓, Package IPA ✓, Upload artifact ✓. (The first run `37886257310` was cancelled by the concurrency group when the log commit was pushed — not a failure.)
 
 ### Open items introduced/left
 
