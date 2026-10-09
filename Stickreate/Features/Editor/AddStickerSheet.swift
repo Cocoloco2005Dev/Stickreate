@@ -545,8 +545,7 @@ struct AddStickerSheet: View {
 
     private func isEditable(_ source: StickerSource) -> Bool {
         switch source {
-        case .image, .video: true
-        case .gif: false
+        case .image, .video, .gif: true
         }
     }
 
@@ -564,7 +563,9 @@ struct AddStickerSheet: View {
                 update(item.id, with: sticker)
             }
         case .gif:
-            EmptyView()
+            GIFTrimView(source: item.source) { sticker in
+                update(item.id, with: sticker)
+            }
         }
     }
 

@@ -445,12 +445,17 @@ struct StickerEditorView: View {
 
     // MARK: - VisionKit subject lift
 
-    /// Full-screen VisionKit step. Press-and-hold lifts a subject exactly like
-    /// Photos; the user drags the cut-out into a target, then we adopt it.
+    /// Full-screen VisionKit step. VisionKit detects every subject; the user
+    /// picks one (tap the subject, tap its chip, or press-and-hold) and its
+    /// cut-out is previewed before confirming.
+    ///
+    /// When the editor is already showing a lifted cut-out, hand the step the
+    /// **pristine original** so lifting another subject starts from the original
+    /// photo instead of compounding cuts on the previous cut-out.
     @ViewBuilder
     private var subjectLiftCover: some View {
         if let editor {
-            SubjectLiftView(image: editor.base) { cutout in
+            SubjectLiftView(image: editor.isLifted ? editor.originalBase : editor.base) { cutout in
                 applyLiftedSubject(cutout)
             }
         }

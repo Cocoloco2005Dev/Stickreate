@@ -372,8 +372,14 @@ struct PackEditorView: View {
 
         case .animatedSticker(let sticker):
             if let source = sticker.source {
-                VideoTrimView(source: source) { updated in
-                    store.updateSticker(updated, in: packID)
+                if case .gif = source {
+                    GIFTrimView(source: source) { updated in
+                        store.updateSticker(updated, in: packID)
+                    }
+                } else {
+                    VideoTrimView(source: source) { updated in
+                        store.updateSticker(updated, in: packID)
+                    }
                 }
             }
         }

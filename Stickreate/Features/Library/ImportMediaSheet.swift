@@ -20,6 +20,7 @@ struct ImportMediaSheet: View {
     private enum EditorTask: String, Identifiable {
         case photo
         case video
+        case gif
 
         var id: String { rawValue }
     }
@@ -326,28 +327,7 @@ struct ImportMediaSheet: View {
         case .video:
             editorTask = .video
         case .gif:
-            convertGIF(into: packID)
-        }
-    }
-
-    @MainActor
-    private func convertGIF(into packID: UUID) {
-        isBusy = true
-        Task {
-            do {
-                let sticker = try await StickerFactory.makeAnimatedSticker(fromGIFSource: source)
-                guard let pack = store.pack(with: packID), isCompatible(pack) else {
-                    isBusy = false
-                    errorMessage = incompatibleMessage
-                    return
-                }
-                try store.add(sticker, to: packID)
-                isBusy = false
-                onDone()
-            } catch {
-                isBusy = false
-                errorMessage = error.localizedDescription
-            }
+            editorTask = .gif
         }
     }
 
@@ -360,6 +340,10 @@ struct ImportMediaSheet: View {
             }
         case .video:
             VideoTrimView(source: source) { sticker in
+                addFromEditor(sticker)
+            }
+        case .gif:
+            GIFTrimView(source: source) { sticker in
                 addFromEditor(sticker)
             }
         }

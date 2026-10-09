@@ -775,9 +775,10 @@ struct VideoTrimView: View {
     }
 }
 
-/// Draggable, resizable crop rectangle drawn over the letterboxed video.
-/// Dimmed outside, white border, large corner handles. Content layer.
-private struct CropOverlay: View {
+/// Draggable, resizable crop rectangle drawn over the letterboxed media
+/// (video or GIF frames). Dimmed outside, white border, large corner handles.
+/// Content layer.
+struct CropOverlay: View {
     /// Normalized (0...1) top-left crop rect.
     @Binding var cropRect: CGRect
     /// Where the video is drawn, in the parent's coordinate space.
@@ -940,8 +941,10 @@ private struct CropOverlay: View {
 }
 
 /// Continuous strip of real frames with a white selection window. Dragging the
-/// centre moves the window; dragging an edge resizes it. Content layer.
-private struct FilmstripView: View {
+/// centre moves the window; dragging an edge resizes it. Source-agnostic: it
+/// takes thumbnails, a duration and bindings, so video and GIF share it.
+/// Content layer.
+struct FilmstripView: View {
     let thumbnails: [UIImage]
     let duration: TimeInterval
     let playhead: TimeInterval
