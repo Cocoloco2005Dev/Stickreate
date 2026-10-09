@@ -386,7 +386,7 @@ struct LibraryView: View {
             let url = try PackArchive.writeTemporaryFile(pack)
             shareItem = ShareItem(url: url)
         } catch {
-            presentError(error.localizedDescription, as: .error)
+            presentError(error.localizedDescription, as: .general)
         }
     }
 
