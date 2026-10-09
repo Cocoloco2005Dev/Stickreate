@@ -78,3 +78,20 @@ Branch flow: `overhaul/audit` (Phases 1–2) → `overhaul/p0-fixes` (Phase 4a) 
   README/status/decisions/troubleshooting/build-release/architecture/features updated; version → 0.20.0.
 - **Not done / deferred**: P0-2 full ownership refactor (needs device), Swift 6 mode + warnings-as-errors,
   `.wasticker` UTType, app icon replacement, final merge + CI build.
+
+## Post-0.20.0 — reported bugs (video cut / lift / GIF)
+
+User-reported, device-visible:
+- **Video Intelligent Cut was a frozen single-frame mask** (`StickerFactory.computeCutout`). Rewritten to
+  per-frame Vision (stride 3, 256 px input, `maskAssignments` nearest-mask reuse, leading-frame backfill,
+  proportional watchdog, per-frame autoreleasepool). Pure mapping unit-tested (`StickerCutTests`).
+- **Lift Subject**: only one subject, no preview, drag unreliable, re-lift compounded cuts. `SubjectLiftView`
+  rewritten: enumerate subjects, select via chips/tap/`subject(at:)`, preview box shows the cut-out,
+  Cut-out/Original toggle, confirm the selected subject; `StickerEditorView.subjectLiftCover` now uses
+  `originalBase` when lifted.
+- **GIFs weren't editable**: new `GIFTrimView` (trim/crop/background, timer-based preview since AVPlayer
+  can't decode GIF) + `StickerFactory.makeAnimatedSticker(fromGIF:range:cropRect:removeBackground:)` with a
+  pure delay-aware `frameRange`; routed from `AddStickerSheet` (queue), `PackEditorView` (re-edit), and
+  `ImportMediaSheet` (Library/share-in). Tests: `GIFEditTests`.
+- **`oracle` pre-build review**: no blockers; applied R1 (single anchor still cuts), R2 (no leading flash),
+  R4 (degenerate GIF range), N3 (autoreleasepool). Version bumped to **0.20.1**.

@@ -175,9 +175,16 @@ enum StickerFactory {
         if let range {
             let selection = frameRange(for: range, durations: all.map(\.duration))
             let selected = Array(all[selection])
-            trimmed = selected.isEmpty ? all : selected
-            let lower = max(0, range.lowerBound)
-            targetDuration = max(0, range.upperBound - lower)
+            if selected.isEmpty {
+                // Degenerate range: encode the whole GIF at its own duration
+                // rather than compressing it into a bogus (shorter) span.
+                trimmed = all
+                targetDuration = nil
+            } else {
+                trimmed = selected
+                let lower = max(0, range.lowerBound)
+                targetDuration = max(0, range.upperBound - lower)
+            }
         } else {
             trimmed = all
             targetDuration = nil
@@ -399,10 +406,11 @@ enum StickerFactory {
             successfulAnchors.append(anchor)
         }
 
-        // Fewer than two successful anchors means the mask can never change over
-        // time — replaying the old single-frame silhouette — so fall back to the
-        // untouched frames. (A one-anchor clip only needs its single pass.)
-        guard successfulAnchors.count >= min(2, anchors.count) else { return nil }
+        // No successful Vision pass at all: fall back to the untouched frames.
+        // A single success is still applied across the clip (better a static cut
+        // than none); `maskAssignments` carries it and reuses the previous mask
+        // when a later anchor fails.
+        guard !successfulAnchors.isEmpty else { return nil }
         onProgress?(0.5)
 
         // Phase 2: composite each frame with its nearest successful mask.
@@ -416,14 +424,16 @@ enum StickerFactory {
         let total = Double(frames.count)
         for (index, frame) in frames.enumerated() {
             if Task.isCancelled { return nil }
-            let image: UIImage
-            if let anchor = assignment[index], let mask = masksByAnchor[anchor] {
-                image = composite(frame.image, through: mask) ?? frame.image
-            } else {
-                // No successful anchor at or before this frame yet: leave it uncut.
-                image = frame.image
+            // Per-frame autoreleasepool: the composite allocates transient Core
+            // Image objects; this loop is now the long pole (up to ~240 frames).
+            let composited = autoreleasepool { () -> Frame in
+                if let anchor = assignment[index], let mask = masksByAnchor[anchor] {
+                    return Frame(image: composite(frame.image, through: mask) ?? frame.image, duration: frame.duration)
+                }
+                // No mask (no anchor succeeded) — leave the frame uncut.
+                return Frame(image: frame.image, duration: frame.duration)
             }
-            result.append(Frame(image: image, duration: frame.duration))
+            result.append(composited)
             onProgress?(0.5 + 0.5 * Double(index + 1) / total)
         }
         return result
@@ -434,8 +444,9 @@ enum StickerFactory {
     /// Anchors are scheduled at `0, stride, 2*stride, …`. A frame in an anchor's
     /// bucket `[anchor, anchor + stride)` uses the most recent anchor at or
     /// before it that succeeded, so a failed anchor's frames reuse the previous
-    /// mask (temporal smoothing). Frames before the first success map to `nil`
-    /// and are left uncut. Pure: no Vision, no images — unit-testable.
+    /// mask (temporal smoothing). Frames before the first success reuse it (no
+    /// leading-uncut flash). Returns all-`nil` only when no anchor succeeded.
+    /// Pure: no Vision, no images — unit-testable.
     static func maskAssignments(
         frameCount: Int,
         stride: Int,
@@ -446,7 +457,9 @@ enum StickerFactory {
         }
         let succeeded = Set(successfulAnchors)
         var result = [Int?](repeating: nil, count: frameCount)
-        var current: Int?
+        // Seed with the first success so leading frames (before the first
+        // successful anchor) are cut with it instead of flashing the background.
+        var current: Int? = successfulAnchors.first
         var anchor = 0
         while anchor < frameCount {
             if succeeded.contains(anchor) { current = anchor }

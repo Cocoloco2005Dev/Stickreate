@@ -25,10 +25,10 @@ final class StickerCutTests: XCTestCase {
         )
     }
 
-    /// Frames before the first successful anchor have no mask to reuse and are
-    /// left uncut (nil).
-    func testLeadingFramesBeforeFirstSuccessAreUncut() {
-        let expected: [Int?] = [nil, nil, nil, nil, nil, nil, 6, 6, 6]
+    /// Leading frames before the first successful anchor reuse that first mask
+    /// (no background flash at the start).
+    func testLeadingFramesReuseFirstSuccess() {
+        let expected: [Int?] = [6, 6, 6, 6, 6, 6, 6, 6, 6]
         XCTAssertEqual(
             StickerFactory.maskAssignments(frameCount: 9, stride: 3, successfulAnchors: [6]),
             expected
