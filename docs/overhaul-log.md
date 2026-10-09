@@ -95,3 +95,17 @@ User-reported, device-visible:
   `ImportMediaSheet` (Library/share-in). Tests: `GIFEditTests`.
 - **`oracle` pre-build review**: no blockers; applied R1 (single anchor still cuts), R2 (no leading flash),
   R4 (degenerate GIF range), N3 (autoreleasepool). Version bumped to **0.20.1**.
+
+## Post-0.20.1 — cut fill, per-frame, progress, UI consistency (0.20.2)
+
+- **Auto-fit**: cut-out stickers crop to the subject's alpha bounds and scale to fill (contain) — static in
+  `StickerEncoder.alphaFitted`, video/GIF via one union box applied to all frames (uniform, no jitter).
+- **Per-frame cut**: `maskStride` 3 → 1 (Vision every frame, 224–256 px input), previous-mask reuse kept.
+- **One continuous progress bar**: `ProgressAccumulator` composed across extraction(0→.30) → cut(.30→.65)
+  → compression(.65→.95) → done(1.0), strictly monotonic; per-frame/per-attempt reporting.
+- **Real Cancel**: `withTaskCancellationHandler` for the cut; `Task.checkCancellation()` before encode and
+  at each ladder iteration; `FrameExtractor` throws on cancel.
+- **UI consistency** (`des-1`): `NavigationActions` (one prominent `.glassProminent` per screen, consistent
+  Back/Cancel), `CreationProgressCard` (live % + Cancel), density in Library/Pack editor/Export.
+- `oracle` review of the whole diff: no blockers; applied R1–R4 (early cancel, continuous bar, alpha-fit
+  early-out, in-place crop). Version → **0.20.2**.

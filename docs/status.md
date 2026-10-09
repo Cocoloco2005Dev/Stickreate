@@ -2,7 +2,7 @@
 
 ## Current
 
-- **Version: 0.20.1** (overhaul branch merged to `main`).
+- **Version: 0.20.2** (overhaul branch merged to `main`).
 - CI (`.github/workflows/ios.yml`) builds, runs unit tests, archives an unsigned IPA, and uploads
   artifacts: `.xcresult` (with screenshots), `selftest-report.json`, the IPA; it also runs the DEBUG
   self-test on the simulator, verifies the Privacy Manifest is bundled, and writes a job summary.
@@ -72,12 +72,8 @@ Dynamic Type max/VoiceOver.
 
 ## Recent history (high level)
 
-- **0.20.1** — video Intelligent Cut now computes a **per-frame** subject mask (every 3rd frame,
-  256 px Vision input, nearest-mask reuse, proportional watchdog) so the cutout follows motion instead
-  of a frozen silhouette. Lift Subject redesigned: detects **multiple subjects**, select by chip/tap,
-  the drop box **previews the cut-out**, an **Original** toggle shows the uncut image, and re-lifting
-  starts from the original (no compounding cuts). **GIFs are now editable** (trim/crop/background) in
-  the queue, on re-edit, and from the Library import path.
+- **0.20.2** — cut-out stickers **auto-fit to fill the canvas** (crop to the subject's alpha bounds, contain — never cropped), uniform across video frames (no jitter). Intelligent Cut runs **per frame** (stride 1, was 3). **One continuous, monotonic progress bar** across extraction → cut → compression (no more 3%→100% jumps) and **Cancel** that actually stops the pipeline. Standardized navigation/action placement (one prominent action per screen, consistent Back/Cancel) and added density in Library/Pack editor/Export.
+- **0.20.1** — video Intelligent Cut follows motion; multi-subject Lift Subject with preview + Original toggle; GIFs editable (trim/crop/background).
 - **0.20.0** — design overhaul (DesignSystem + Liquid Glass + accessibility), persistence safety,
   privacy manifest, P1 fixes, self-test mode, CI hardening, localization.
 - 0.19.0 — reliable animated preview; subject lift uses the cut-out directly; generic `.wasticker`.

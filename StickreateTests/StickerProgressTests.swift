@@ -59,4 +59,25 @@ final class StickerProgressTests: XCTestCase {
             "a 0...1 stage fraction must stay inside the stage's slice"
         )
     }
+
+    /// Pins the exact overall ranges the UI bar now depends on: each stage starts
+    /// where the previous ended, so the single bar is continuous across boundaries
+    /// (extracting 0→0.30, cutting 0.30→0.65, compressing 0.65→0.95, saving →1.0).
+    func testStageSlicesAreContiguousAcrossTheBar() {
+        let extraction = ProgressAccumulator.Stage.extraction
+        let cut = ProgressAccumulator.Stage.cut
+        let compression = ProgressAccumulator.Stage.compression
+        let saving = ProgressAccumulator.Stage.saving
+
+        XCTAssertEqual(extraction.lowerBound, 0, accuracy: 1e-9)
+        XCTAssertEqual(extraction.lowerBound + extraction.weight, cut.lowerBound, accuracy: 1e-9)
+        XCTAssertEqual(cut.lowerBound + cut.weight, compression.lowerBound, accuracy: 1e-9)
+        XCTAssertEqual(compression.lowerBound + compression.weight, saving.lowerBound, accuracy: 1e-9)
+        XCTAssertEqual(saving.lowerBound + saving.weight, 1.0, accuracy: 1e-9)
+
+        // A completed stage lands exactly on the next stage's start (no reset).
+        var accumulator = ProgressAccumulator()
+        XCTAssertEqual(accumulator.update(1.0, in: .extraction), cut.lowerBound, accuracy: 1e-9)
+        XCTAssertEqual(accumulator.update(1.0, in: .compression), saving.lowerBound, accuracy: 1e-9)
+    }
 }

@@ -36,7 +36,11 @@ enum StickerFactory {
         source: StickerSource? = nil,
         onStage: ((StickerCreationStage) -> Void)? = nil
     ) throws -> StickerItem {
-        onStage?(.compressing(0))
+        // Static creation runs only the compression + saving stages, so it emits
+        // composed overall fractions from the compression slice of the ONE bar
+        // (there is no extraction/cut to spend those earlier weights on).
+        var progress = ProgressAccumulator()
+        onStage?(.compressing(progress.update(0, in: .compression)))
         // Auto-fit a cut-out subject to fill the canvas; opaque photos and fully
         // transparent images pass through unchanged.
         let fitted = StickerEncoder.alphaFitted(image)
@@ -44,7 +48,7 @@ enum StickerFactory {
               let previewData = StickerEncoder.previewPNG(from: fitted, size: 512) else {
             throw Failure.failed("Couldn't encode this sticker.")
         }
-        onStage?(.compressing(1.0))
+        onStage?(.compressing(progress.update(1, in: .compression)))
         onStage?(.saving)
         let item = StickerItem(
             kind: .static,
@@ -90,16 +94,25 @@ enum StickerFactory {
         onProgress: ((Double) -> Void)? = nil,
         onStage: ((StickerCreationStage) -> Void)? = nil
     ) async throws -> StickerItem {
-        onStage?(.extracting(0))
+        // Extraction occupies the first 0 → ~0.30 slice of the ONE overall bar.
+        // Its callbacks are delivered asynchronously, so once extraction returns we
+        // drop any late tick and snap to the slice end — a stale `.extracting`
+        // update must never arrive after cut/compress and pull the bar backwards.
+        var extraction = ProgressAccumulator()
+        var extracting = true
+        onStage?(.extracting(extraction.update(0, in: .extraction)))
         let extracted = try await FrameExtractor.frames(
             fromVideoAt: draft.url,
             range: range,
             fps: fps,
             onProgress: { value in
-                onStage?(.extracting(value))
+                guard extracting else { return }
+                onStage?(.extracting(extraction.update(value, in: .extraction)))
                 if !removeBackground { onProgress?(value) }
             }
         )
+        extracting = false
+        onStage?(.extracting(extraction.update(1, in: .extraction)))
         let frames = cropRect.map { rect in
             extracted.map { Frame(image: crop($0.image, to: rect), duration: $0.duration) }
         } ?? extracted
@@ -136,10 +149,15 @@ enum StickerFactory {
 
     /// Crops every frame to the union of their (padded) alpha bounds so a cut-out
     /// subject fills the canvas uniformly — one shared box, so the animation never
-    /// jitters. No-ops unless every frame reports transparency AND shares one
-    /// pixel size (mixed-size GIF frames are left untouched).
+    /// jitters. No-ops unless the first frame reports transparency AND every frame
+    /// shares one pixel size (mixed-size GIF frames are left untouched). The crop
+    /// is applied in place so each source image is released as it is replaced.
     private static func alphaFittedFrames(_ frames: [Frame]) -> [Frame] {
-        guard let first = frames.first?.image else { return frames }
+        // Early-out on the common opaque path: one scan instead of one per frame.
+        guard let first = frames.first?.image,
+              StickerEncoder.alphaBounds(of: first) != nil else {
+            return frames
+        }
         let size = pixelSize(of: first)
         guard size.width > 0,
               frames.allSatisfy({ pixelSize(of: $0.image) == size }),
@@ -147,7 +165,14 @@ enum StickerFactory {
             return frames
         }
         let padded = StickerEncoder.paddedCropRect(union, margin: StickerEncoder.alphaMargin, in: first)
-        return frames.map { Frame(image: crop($0.image, toPixel: padded), duration: $0.duration) }
+        var result = frames
+        for index in result.indices {
+            result[index] = Frame(
+                image: crop(result[index].image, toPixel: padded),
+                duration: result[index].duration
+            )
+        }
+        return result
     }
 
     /// Pixel dimensions of an upright image, independent of its point `scale`.
@@ -210,9 +235,12 @@ enum StickerFactory {
         guard let data = try? Data(contentsOf: StickerSourceStore.url(for: source)) else {
             throw Failure.empty
         }
-        onStage?(.extracting(0))
+        // GIF decode is coarse (no per-frame callback): two ticks across the
+        // extraction slice of the ONE overall bar.
+        var extraction = ProgressAccumulator()
+        onStage?(.extracting(extraction.update(0, in: .extraction)))
         let all = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
-        onStage?(.extracting(1))
+        onStage?(.extracting(extraction.update(1, in: .extraction)))
 
         let trimmed: [Frame]
         let targetDuration: TimeInterval?
@@ -297,6 +325,10 @@ enum StickerFactory {
     ) async throws -> StickerItem {
         guard !frames.isEmpty else { throw Failure.empty }
 
+        // ONE overall 0…1 accumulator across cut → compress (extraction already
+        // reported its 0 → ~0.30 slice), so the bar never resets or decreases.
+        var progress = ProgressAccumulator()
+
         // Only run Vision when explicitly asked. If the cutout fails entirely,
         // keep the original frames for all.
         let usable: [Frame]
@@ -305,7 +337,7 @@ enum StickerFactory {
             let visionStarted = CFAbsoluteTimeGetCurrent()
             #endif
             usable = await cutOut(frames, onProgress: { value in
-                onStage?(.cutting(value))
+                onStage?(.cutting(progress.update(value, in: .cut)))
                 onProgress?(value)
             }) ?? frames
             #if DEBUG
@@ -320,7 +352,12 @@ enum StickerFactory {
         // the canvas without per-frame scale jitter. No-op when opaque.
         let encoded = alphaFittedFrames(usable)
 
-        onStage?(.compressing(0))
+        // A cancelled creation must abort BEFORE the expensive encode, not just
+        // discard its result. The caller treats a thrown CancellationError as a
+        // silent cancel.
+        try Task.checkCancellation()
+
+        onStage?(.compressing(progress.update(0, in: .compression)))
         #if DEBUG
         let encodeStarted = CFAbsoluteTimeGetCurrent()
         #endif
@@ -334,11 +371,11 @@ enum StickerFactory {
         guard let stickerData = StickerEncoder.animatedSticker(
             from: encoded,
             targetDuration: targetDuration,
-            // Cap the encoder's in-flight fraction at 0.999: the only way this
-            // path fails after a successful encode is a nil preview, and a failed
-            // creation must never have shown 100%. The real 1.0 is emitted below
-            // only once both payloads exist.
-            onProgress: { fraction in onStage?(.compressing(min(0.999, fraction))) }
+            // Compose the encoder's 0...1 fraction into the compression slice of
+            // the ONE overall bar (~0.65 → ~0.95); 1.0 stays reserved for `.done`.
+            onProgress: { fraction in
+                onStage?(.compressing(progress.update(fraction, in: .compression)))
+            }
         ),
         let previewData = StickerEncoder.previewPNG(from: firstImage, size: 512) else {
             throw Failure.failed("Couldn't encode this animated sticker.")
@@ -347,7 +384,7 @@ enum StickerFactory {
         let encodeMs = (CFAbsoluteTimeGetCurrent() - encodeStarted) * 1000
         print(String(format: "[StickerFactory] encode %d frames in %.0fms (%d bytes)", frameCount, encodeMs, stickerData.count))
         #endif
-        onStage?(.compressing(1.0))
+        // `.done` carries fraction 1.0 once the item (payload + preview) exists.
         onStage?(.saving)
         let item = StickerItem(
             kind: .animated,

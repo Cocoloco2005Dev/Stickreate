@@ -117,9 +117,13 @@ enum StickerEncoder {
         #endif
 
         for candidate in candidates {
+            // Abort promptly on cancellation; a thrown CancellationError upstream
+            // is treated by the UI as a silent cancel, so returning nil is safe.
+            if Task.isCancelled { return nil }
             let durations = targetMilliseconds(candidate, targetDuration: targetDuration)
             let images = candidate.map(\.image)
             for quality in animatedQualities {
+                if Task.isCancelled { return nil }
                 let options = WebPAnimationEncoder.Options(
                     quality: quality,
                     method: animatedMethod,
