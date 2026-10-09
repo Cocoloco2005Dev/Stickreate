@@ -14,6 +14,10 @@ final class PackStore {
     /// observes it and presents it in an alert.
     var persistenceError: String?
 
+    /// Set when `load()` had to quarantine a corrupt file. Suppresses the orphan
+    /// sweep, since `packs` may then be a partial or recovered view of the library.
+    private var recoveredFromCorruptFile = false
+
     private let directory: URL
 
     private var fileURL: URL {
@@ -229,6 +233,7 @@ final class PackStore {
     /// Keeps the bad bytes in a quarantine copy, then either restores the last
     /// good backup or starts empty with a message. The original is never deleted.
     private func recoverFromCorruptFile() {
+        recoveredFromCorruptFile = true
         let quarantineURL = directory.appendingPathComponent(quarantineFileName(), isDirectory: false)
         try? FileManager.default.copyItem(at: fileURL, to: quarantineURL)
 
@@ -256,7 +261,7 @@ final class PackStore {
     /// a problem — otherwise an empty/partial `packs` would make live sources
     /// look orphaned and wipe them.
     func reconcileSources() {
-        guard persistenceError == nil else { return }
+        guard !recoveredFromCorruptFile, persistenceError == nil else { return }
 
         let fileManager = FileManager.default
         let sourcesURL = directory.appendingPathComponent("Sources", isDirectory: true)
@@ -284,10 +289,13 @@ final class PackStore {
             return
         }
 
-        // Preserve the last known-good file before overwriting it.
-        if let existing = try? Data(contentsOf: fileURL),
-           (try? JSONDecoder().decode([StickerPack].self, from: existing)) != nil {
-            try? existing.write(to: backupURL, options: .atomic)
+        // Roll the previous file to the backup with a cheap move (no read/decode).
+        // A corrupt packs.json is handled at load via quarantine, so it needn't
+        // be re-validated here.
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: fileURL.path) {
+            try? fileManager.removeItem(at: backupURL)
+            try? fileManager.moveItem(at: fileURL, to: backupURL)
         }
 
         do {

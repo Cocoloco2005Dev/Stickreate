@@ -6,6 +6,9 @@ options:
     iOS: "26.0"
   developmentLanguage: en
   createIntermediateGroups: true
+  fileTypes:
+    xcprivacy:
+      buildPhase: resources
 
 packages:
   SDWebImageWebPCoder:

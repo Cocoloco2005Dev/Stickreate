@@ -106,10 +106,14 @@ struct RootView: View {
                     let data = try Data(contentsOf: url)
                     return try PackArchive.importPack(from: data)
                 }.value
-                PackStore.shared.importPack(pack)
-                SettingsStore.shared.refreshStorageSummary()
-                selection = .packs
-                successPulse += 1
+                if PackStore.shared.importPack(pack) {
+                    SettingsStore.shared.refreshStorageSummary()
+                    selection = .packs
+                    successPulse += 1
+                } else {
+                    importError = "This pack couldn't be imported: it's empty, too large, or mixes sticker types."
+                    errorPulse += 1
+                }
             } catch {
                 importError = (error as? LocalizedError)?.errorDescription
                     ?? error.localizedDescription

@@ -197,6 +197,7 @@ enum PackArchive {
         guard let entries = pack["stickers"] as? [[String: Any]], !entries.isEmpty else {
             throw Failure.invalid
         }
+        guard entries.count <= Limits.maxStickers else { throw Failure.tooManyStickers }
         let stickers = try entries.map { entry -> StickerItem in
             guard let file = entry["image_file"] as? String,
                   let imageEntry = archive[file] else {
@@ -234,6 +235,7 @@ enum PackArchive {
             }
             .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
         guard !images.isEmpty else { throw Failure.invalid }
+        guard images.count <= Limits.maxStickers else { throw Failure.tooManyStickers }
 
         let isAnimated = (try? read(archive, images[0])).map(isAnimatedWebP) ?? false
         let kind: StickerKind = isAnimated ? .animated : .static
@@ -264,6 +266,7 @@ enum PackArchive {
         guard archive.version >= 1, archive.version <= legacyVersion else {
             throw Failure.unsupportedVersion
         }
+        guard archive.stickers.count <= Limits.maxStickers else { throw Failure.tooManyStickers }
 
         let stickers = try archive.stickers.map { archived -> StickerItem in
             guard let stickerData = Data(base64Encoded: archived.sticker),

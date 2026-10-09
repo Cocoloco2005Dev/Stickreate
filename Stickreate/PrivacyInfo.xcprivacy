@@ -33,6 +33,16 @@
 				<string>C617.1</string>
 			</array>
 		</dict>
+		<!-- MaskEditor.swift:529 CACurrentMediaTime() (refreshPreviewThrottled) reads
+		     system uptime/boot time to throttle preview refreshes to ~30 fps. -> 35F9.1 -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

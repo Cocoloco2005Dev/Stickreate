@@ -504,9 +504,15 @@ struct LibraryView: View {
                     let data = try Data(contentsOf: url)
                     return try PackArchive.importPack(from: data)
                 }.value
-                store.importPack(pack)
-                settings.refreshStorageSummary()
-                showImportedBanner()
+                if store.importPack(pack) {
+                    settings.refreshStorageSummary()
+                    showImportedBanner()
+                } else {
+                    presentError(
+                        "This pack couldn't be imported: it's empty, too large, or mixes sticker types.",
+                        as: .importFailed
+                    )
+                }
             } catch {
                 presentError(error.localizedDescription, as: .importFailed)
             }
