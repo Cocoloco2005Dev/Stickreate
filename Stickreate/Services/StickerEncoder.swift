@@ -51,16 +51,31 @@ enum StickerEncoder {
     ///
     /// When `targetDuration` is provided, frame durations are distributed as
     /// whole milliseconds that sum to `targetDuration`. `onProgress` reports a
-    /// monotonic `0...1` fraction across frames and attempts, ending at 1.0.
+    /// monotonic `0...1` fraction across frames and attempts; in-flight values
+    /// never exceed `0.999` and only a payload actually returned reports `1.0`.
+    ///
+    /// `byteBudget` overrides the 480 KB target; it exists so tests can force the
+    /// failure path without generating an incompressibly large clip.
     static func animatedSticker(
         from frames: [Frame],
         loopCount: Int = 0,
         targetDuration: TimeInterval? = nil,
+        byteBudget: Int? = nil,
         onProgress: ((Double) -> Void)? = nil
     ) -> Data? {
         guard frames.count >= 2 else { return nil }
+        // Build the resident canvas set ONCE. `prepare` passes through any frame
+        // that is already a 512×512 upright canvas (no new pixel buffer), and
+        // this function keeps no reference to `frames` past this point, so only
+        // the prepared set stays resident across the encode ladder.
         let prepared = prepare(frames)
         guard prepared.count >= 2 else { return nil }
+
+        let budget = byteBudget ?? animatedByteBudget
+
+        #if DEBUG
+        logPreparedBudget(prepared)
+        #endif
 
         let loop = max(0, loopCount)
 
@@ -107,7 +122,7 @@ enum StickerEncoder {
                 attempt += 1
                 // 480 KB target is below the 500 KB hard cap, so this also
                 // guarantees WhatsApp compliance.
-                if let data, data.count <= animatedByteBudget {
+                if let data, data.count <= budget {
                     #if DEBUG
                     let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
                     print(String(
@@ -125,7 +140,9 @@ enum StickerEncoder {
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
         print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms (kept ≥ \(minFramesAfterDrop) frames)")
         #endif
-        onProgress?(1.0)
+        // No `onProgress?(1.0)` here: a failed encode must never look finished.
+        // In-flight progress is capped at 0.999 by `report`; the thrown
+        // `Failure` in the caller drives the error UI.
         return nil
     }
 
@@ -204,11 +221,19 @@ enum StickerEncoder {
 
     /// Draws every frame on the 512×512 canvas, clamps durations to the 8 ms
     /// floor and scales the whole animation down to the 10 s ceiling.
+    ///
+    /// A frame that is already a pixel-exact 512×512 upright canvas is reused
+    /// as-is (same `UIImage`), so it never allocates a second pixel set. Only
+    /// frames whose size or orientation actually differs are redrawn.
     private static func prepare(_ frames: [Frame]) -> [Frame] {
-        var prepared = frames.compactMap { frame -> Frame? in
-            autoreleasepool { () -> Frame? in
-                guard let canvas = aspectFit(frame.image, in: canvasSize) else { return nil }
-                return Frame(image: canvas, duration: max(frame.duration, Limits.minFrameDuration))
+        var prepared: [Frame] = []
+        prepared.reserveCapacity(frames.count)
+        for frame in frames {
+            let duration = max(frame.duration, Limits.minFrameDuration)
+            if isCanvasReady(frame.image) {
+                prepared.append(Frame(image: frame.image, duration: duration))
+            } else if let canvas = autoreleasepool(invoking: { aspectFit(frame.image, in: canvasSize) }) {
+                prepared.append(Frame(image: canvas, duration: duration))
             }
         }
 
@@ -225,6 +250,39 @@ enum StickerEncoder {
         }
         return prepared
     }
+
+    /// True when `image` is already a pixel-exact 512×512 upright canvas, so the
+    /// frame can be reused without a redraw. Requires a bitmap backing, since the
+    /// redraw path is also what materialises a `cgImage` for exotic inputs.
+    private static func isCanvasReady(_ image: UIImage) -> Bool {
+        guard image.imageOrientation == .up, image.cgImage != nil else { return false }
+        let width = Int((image.size.width * image.scale).rounded())
+        let height = Int((image.size.height * image.scale).rounded())
+        return width == Limits.canvas && height == Limits.canvas
+    }
+
+    /// Test seam: runs the canvas-preparation step so tests can assert an
+    /// already-512×512 upright frame is passed through without a redraw.
+    static func preparedFramesForTesting(_ frames: [Frame]) -> [Frame] {
+        prepare(frames)
+    }
+
+    #if DEBUG
+    /// Estimates the resident RGBA cost of the prepared frame set
+    /// (`width × height × 4 bytes × frame count`) so device runs can confirm the
+    /// single-set budget.
+    private static func logPreparedBudget(_ frames: [Frame]) {
+        let bytes = frames.reduce(0) { total, frame in
+            let width = Int((frame.image.size.width * frame.image.scale).rounded())
+            let height = Int((frame.image.size.height * frame.image.scale).rounded())
+            return total + width * height * 4
+        }
+        print(String(
+            format: "[StickerEncoder] prepared %d frames ≈ %.1f MB RGBA (w*h*4*count)",
+            frames.count, Double(bytes) / 1_048_576
+        ))
+    }
+    #endif
 
     /// Frame durations as whole milliseconds. With a `targetDuration` the
     /// millisecond values sum exactly to it (never below the 8 ms floor); without

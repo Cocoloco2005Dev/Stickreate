@@ -14,6 +14,7 @@ struct RootView: View {
     @State private var selection: Section = .packs
     @State private var incoming: IncomingMedia?
     @State private var importError: String?
+    @State private var store = PackStore.shared
 
     /// Wrapper so `.sheet(item:)` can present a received media source.
     private struct IncomingMedia: Identifiable {
@@ -32,6 +33,17 @@ struct RootView: View {
                     SettingsView()
                 }
             }
+        }
+        .alert(
+            "Library problem",
+            isPresented: Binding(
+                get: { store.persistenceError != nil },
+                set: { if !$0 { store.clearPersistenceError() } }
+            )
+        ) {
+            Button("OK", role: .cancel) { store.clearPersistenceError() }
+        } message: {
+            Text(store.persistenceError ?? "")
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .onOpenURL { url in

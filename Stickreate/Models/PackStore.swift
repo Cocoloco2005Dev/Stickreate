@@ -9,13 +9,31 @@ final class PackStore {
 
     var packs: [StickerPack] = []
 
-    private let fileURL: URL = {
-        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return directory.appendingPathComponent("packs.json", isDirectory: false)
-    }()
+    /// User-facing message for the most recent persistence problem, if any.
+    /// Set when a load had to recover/quarantine or a save failed; RootView
+    /// observes it and presents it in an alert.
+    var persistenceError: String?
 
-    init() {
+    private let directory: URL
+
+    private var fileURL: URL {
+        directory.appendingPathComponent("packs.json", isDirectory: false)
+    }
+
+    private var backupURL: URL {
+        directory.appendingPathComponent("packs.json.bak", isDirectory: false)
+    }
+
+    /// `directory` is injectable so tests can point the store at a temp folder;
+    /// production uses the app's Documents directory.
+    init(directory: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]) {
+        self.directory = directory
         load()
+    }
+
+    /// Clears the current persistence message, e.g. after the alert is dismissed.
+    func clearPersistenceError() {
+        persistenceError = nil
     }
 
     // MARK: - Mutations
@@ -24,14 +42,14 @@ final class PackStore {
     func createPack(named name: String = "Untitled Pack") -> StickerPack {
         let pack = StickerPack(name: name)
         packs.append(pack)
-        save()
+        persist()
         return pack
     }
 
     /// Inserts an imported pack and persists it.
     func importPack(_ pack: StickerPack) {
         packs.append(pack)
-        save()
+        persist()
     }
 
     func pack(with id: UUID) -> StickerPack? {
@@ -52,7 +70,7 @@ final class PackStore {
 
         pack.stickers.append(item)
         packs[index] = pack
-        save()
+        persist()
     }
 
     func removeSticker(_ stickerID: UUID, from packID: UUID) {
@@ -62,7 +80,7 @@ final class PackStore {
             StickerSourceStore.delete(source)
         }
         packs[index].stickers.remove(at: stickerIndex)
-        save()
+        persist()
     }
 
     /// Replaces a sticker in place, keeping its order.
@@ -90,7 +108,7 @@ final class PackStore {
         } else {
             return
         }
-        save()
+        persist()
     }
 
     /// Reorders stickers, e.g. from a SwiftUI `ForEach` `.onMove`.
@@ -107,7 +125,7 @@ final class PackStore {
         stickers.insert(contentsOf: moving, at: insertion)
 
         packs[index].stickers = stickers
-        save()
+        persist()
     }
 
     /// Moves a sticker to index 0 so it becomes the pack's tray/cover image.
@@ -117,7 +135,7 @@ final class PackStore {
               stickerIndex != 0 else { return }
         let sticker = packs[packIndex].stickers.remove(at: stickerIndex)
         packs[packIndex].stickers.insert(sticker, at: 0)
-        save()
+        persist()
     }
 
     /// Duplicates a sticker next to the original with a new id. The source file
@@ -137,18 +155,25 @@ final class PackStore {
             source: copiedSource
         )
         packs[packIndex].stickers.insert(copy, at: stickerIndex + 1)
-        save()
+        persist()
     }
 
     func removePack(_ packID: UUID) {
+        if let pack = packs.first(where: { $0.id == packID }) {
+            for sticker in pack.stickers {
+                if let source = sticker.source {
+                    StickerSourceStore.delete(source)
+                }
+            }
+        }
         packs.removeAll { $0.id == packID }
-        save()
+        persist()
     }
 
     func rename(_ packID: UUID, to name: String) {
         guard let index = packs.firstIndex(where: { $0.id == packID }) else { return }
         packs[index].name = name
-        save()
+        persist()
     }
 
     /// Assigns (or clears) a pack's folder. Blank strings clear the folder.
@@ -156,7 +181,7 @@ final class PackStore {
         guard let index = packs.firstIndex(where: { $0.id == packID }) else { return }
         let trimmed = folder?.trimmingCharacters(in: .whitespacesAndNewlines)
         packs[index].folder = (trimmed?.isEmpty ?? true) ? nil : trimmed
-        save()
+        persist()
     }
 
     /// All distinct, non-empty folders, sorted for display.
@@ -168,18 +193,70 @@ final class PackStore {
         guard let packIndex = packs.firstIndex(where: { $0.id == packID }),
               let stickerIndex = packs[packIndex].stickers.firstIndex(where: { $0.id == stickerID }) else { return }
         packs[packIndex].stickers[stickerIndex].emojis = Array(emojis.prefix(Limits.maxEmojisPerSticker))
-        save()
+        persist()
     }
 
     // MARK: - Persistence
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
-        packs = (try? JSONDecoder().decode([StickerPack].self, from: data)) ?? []
+        // Missing packs.json is the normal first-launch case: start empty, no error.
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+
+        guard let data = try? Data(contentsOf: fileURL),
+              let decoded = try? JSONDecoder().decode([StickerPack].self, from: data) else {
+            // Present but unreadable or undecodable: quarantine and recover.
+            recoverFromCorruptFile()
+            return
+        }
+
+        packs = decoded
     }
 
-    private func save() {
-        guard let data = try? JSONEncoder().encode(packs) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+    /// Keeps the bad bytes in a quarantine copy, then either restores the last
+    /// good backup or starts empty with a message. The original is never deleted.
+    private func recoverFromCorruptFile() {
+        let quarantineURL = directory.appendingPathComponent(quarantineFileName(), isDirectory: false)
+        try? FileManager.default.copyItem(at: fileURL, to: quarantineURL)
+
+        if let backupData = try? Data(contentsOf: backupURL),
+           let decoded = try? JSONDecoder().decode([StickerPack].self, from: backupData) {
+            packs = decoded
+            persistenceError = "Your library had to be restored from a backup."
+        } else {
+            packs = []
+            persistenceError = "Your library couldn't be read. A copy was kept as \(quarantineURL.lastPathComponent)."
+        }
+    }
+
+    /// Filename-safe ISO timestamp, e.g. `packs.corrupt-2026-10-09T12-34-56Z.json`.
+    private func quarantineFileName() -> String {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        return "packs.corrupt-\(timestamp).json"
+    }
+
+    /// Single funnel for writes. Mutators stay non-throwing; failures surface
+    /// through `persistenceError` instead of silently resetting the library.
+    private func persist() {
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(packs)
+        } catch {
+            persistenceError = "Your library couldn't be saved."
+            return
+        }
+
+        // Preserve the last known-good file before overwriting it.
+        if let existing = try? Data(contentsOf: fileURL),
+           (try? JSONDecoder().decode([StickerPack].self, from: existing)) != nil {
+            try? existing.write(to: backupURL, options: .atomic)
+        }
+
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            persistenceError = nil
+        } catch {
+            persistenceError = "Not enough storage — your last change wasn't saved."
+        }
     }
 }

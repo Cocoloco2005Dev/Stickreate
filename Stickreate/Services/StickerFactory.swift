@@ -262,17 +262,28 @@ enum StickerFactory {
         #if DEBUG
         let encodeStarted = CFAbsoluteTimeGetCurrent()
         #endif
+        // Capture the preview source and count BEFORE encoding so `usable` has no
+        // use after the encode call. In an optimized build ARC can then release
+        // the source frame set at that point, roughly halving the resident frame
+        // memory during the encode ladder. (Fully freeing it also needs the
+        // callers to stop holding their frames — tracked as a Phase 4b follow-up.)
+        guard let firstImage = usable.first?.image else { throw Failure.empty }
+        let frameCount = usable.count
         guard let stickerData = StickerEncoder.animatedSticker(
             from: usable,
             targetDuration: targetDuration,
-            onProgress: { fraction in onStage?(.compressing(fraction)) }
+            // Cap the encoder's in-flight fraction at 0.999: the only way this
+            // path fails after a successful encode is a nil preview, and a failed
+            // creation must never have shown 100%. The real 1.0 is emitted below
+            // only once both payloads exist.
+            onProgress: { fraction in onStage?(.compressing(min(0.999, fraction))) }
         ),
-        let previewData = StickerEncoder.previewPNG(from: usable[0].image, size: 512) else {
+        let previewData = StickerEncoder.previewPNG(from: firstImage, size: 512) else {
             throw Failure.failed("Couldn't encode this animated sticker.")
         }
         #if DEBUG
         let encodeMs = (CFAbsoluteTimeGetCurrent() - encodeStarted) * 1000
-        print(String(format: "[StickerFactory] encode %d frames in %.0fms (%d bytes)", usable.count, encodeMs, stickerData.count))
+        print(String(format: "[StickerFactory] encode %d frames in %.0fms (%d bytes)", frameCount, encodeMs, stickerData.count))
         #endif
         onStage?(.compressing(1.0))
         onStage?(.saving)

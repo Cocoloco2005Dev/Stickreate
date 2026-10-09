@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<!-- SettingsStore.swift:32 (@ObservationIgnored private let defaults: UserDefaults) and
+		     SettingsStore.swift:85 (init(defaults: UserDefaults = .standard)) persist app-only
+		     preferences (defaultFPS, confirmIntelligentCut, keepOriginalSources, hasSeenOnboarding,
+		     exportMode) in the app's own standard defaults. -> CA92.1 -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+		<!-- SettingsStore.swift:106, SettingsStore.swift:133, SettingsStore.swift:144 read file
+		     metadata via resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) on files inside
+		     the app container (Documents/Sources, packs.json, temporaryDirectory). -> C617.1 -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
