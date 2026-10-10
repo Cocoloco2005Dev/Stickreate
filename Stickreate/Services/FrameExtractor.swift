@@ -186,8 +186,20 @@ enum FrameExtractor {
     }
 
     /// Decodes `times` off the main thread with `AVAssetImageGenerator`
-    /// (`appliesPreferredTrackTransform = true`, so frames are upright). Each
-    /// decode runs in its own autorelease pool so frames never pile up.
+    /// (`appliesPreferredTrackTransform = true`, so frames are upright).
+    ///
+    /// Uses `images(for:)` — Apple's batch path (the Swift-preferred wrapper
+    /// over `generateCGImagesAsynchronously(forTimes:)`). Unlike one
+    /// `image(at:)` call per frame, the batch decode pipelines requests with
+    /// playback-like decoding efficiencies, which is the whole speedup. Its
+    /// concurrency is bounded internally by AVFoundation (hardware decoder
+    /// sessions), so we never fan out one decode per frame. Each decode runs in
+    /// its own autorelease pool so frames never pile up.
+    ///
+    /// Elements may arrive out of requested order, so successful results are
+    /// collected with their `requestedTime` and sorted back into time order.
+    /// Failed targets are dropped exactly as before (the caller pads trailing
+    /// gaps).
     private static func decodeFrames(
         url: URL,
         times: [CMTime],
@@ -195,19 +207,36 @@ enum FrameExtractor {
         onProgress: ((Double) -> Void)?
     ) async throws -> [Frame] {
         let generator = makeGenerator(for: url)
-        let total = Double(times.count)
-        var frames: [Frame] = []
-        frames.reserveCapacity(times.count)
-        for (index, time) in times.enumerated() {
-            if Task.isCancelled { throw CancellationError() }
-            if let result = try? await generator.image(at: time) {
-                let frame = autoreleasepool {
-                    Frame(image: UIImage(cgImage: result.image), duration: frameDuration)
+        let total = times.count
+        guard total > 0 else { throw Failure.empty }
+        var decoded: [(time: CMTime, frame: Frame)] = []
+        decoded.reserveCapacity(total)
+
+        try await withTaskCancellationHandler {
+            var received = 0
+            for await result in generator.images(for: times) {
+                if Task.isCancelled { throw CancellationError() }
+                received += 1
+                switch result {
+                case .success(let requestedTime, let image, _):
+                    let frame = autoreleasepool {
+                        Frame(image: UIImage(cgImage: image), duration: frameDuration)
+                    }
+                    decoded.append((requestedTime, frame))
+                case .failure:
+                    break // keep the existing trailing-padding behavior
                 }
-                frames.append(frame)
+                reportProgress(onProgress, Double(received) / Double(total))
             }
-            reportProgress(onProgress, total > 0 ? Double(index + 1) / total : 1)
+        } onCancel: {
+            // Stop the batch promptly instead of draining every remaining time.
+            generator.cancelAllCGImageGeneration()
         }
+
+        // Requested times are strictly increasing, so sorting by requestedTime
+        // restores the caller's exact frame order even if the batch delivered
+        // completions out of order.
+        let frames = decoded.sorted { $0.time < $1.time }.map { $0.frame }
         guard !frames.isEmpty else { throw Failure.empty }
         return frames
     }

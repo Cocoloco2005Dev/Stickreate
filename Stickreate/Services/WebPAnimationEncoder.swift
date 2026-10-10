@@ -21,8 +21,10 @@ enum WebPAnimationEncoder {
     struct Options {
         /// libwebp lossy quality, 0...100 (100 = best/largest).
         var quality: Float = 80
-        /// Quality/speed trade-off, 0...6 (6 = slowest/best).
-        var method: Int = 4
+        /// Quality/speed trade-off, 0...6 (6 = slowest/best). Low values are the
+        /// single biggest speed lever; the animated encoder already exploits
+        /// inter-frame redundancy, so 2 is the fast default here.
+        var method: Int = 2
         /// Minimum distance between key frames (`WebPAnimEncoderOptions.kmin`).
         var keyframeInterval: Int = 10
         /// 0 = loop forever.
@@ -34,7 +36,7 @@ enum WebPAnimationEncoder {
 
         init(
             quality: Float = 80,
-            method: Int = 4,
+            method: Int = 2,
             keyframeInterval: Int = 10,
             loopCount: Int = 0,
             minimizeSize: Bool = false

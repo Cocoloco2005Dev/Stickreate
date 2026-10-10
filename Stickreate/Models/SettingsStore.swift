@@ -9,6 +9,7 @@ final class SettingsStore {
     private enum Keys {
         static let keepOriginalSources = "stickreate.keepOriginalSources"
         static let hasSeenOnboarding = "stickreate.hasSeenOnboarding"
+        static let expandCutoutToFill = "stickreate.expandCutoutToFill"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -16,6 +17,7 @@ final class SettingsStore {
     // Tracked backing storage; the public properties stay observable and persist.
     private var storedKeepOriginalSources: Bool
     private var storedHasSeenOnboarding: Bool
+    private var storedExpandCutoutToFill: Bool
 
     /// Cached storage total, recomputed by `refreshStorageSummary()`.
     private var cachedStorageSummary: String
@@ -45,6 +47,19 @@ final class SettingsStore {
     /// it (see P1-5 follow-up).
     var shouldPersistOriginalSources: Bool { keepOriginalSources }
 
+    /// Auto-fit a cut-out subject to fill the sticker canvas (crop to its alpha
+    /// bounds and scale up). Defaults to `true`; `false` keeps the subject at its
+    /// original framing.
+    ///
+    /// Persisted preference written by the Settings toggle.
+    var expandCutoutToFill: Bool {
+        get { storedExpandCutoutToFill }
+        set {
+            storedExpandCutoutToFill = newValue
+            defaults.set(newValue, forKey: Keys.expandCutoutToFill)
+        }
+    }
+
     var hasSeenOnboarding: Bool {
         get { storedHasSeenOnboarding }
         set {
@@ -57,6 +72,7 @@ final class SettingsStore {
         self.defaults = defaults
         self.storedKeepOriginalSources = defaults.object(forKey: Keys.keepOriginalSources) as? Bool ?? true
         self.storedHasSeenOnboarding = defaults.object(forKey: Keys.hasSeenOnboarding) as? Bool ?? false
+        self.storedExpandCutoutToFill = defaults.object(forKey: Keys.expandCutoutToFill) as? Bool ?? true
         self.cachedStorageSummary = Self.computeStorageSummary()
     }
 

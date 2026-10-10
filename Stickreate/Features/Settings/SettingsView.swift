@@ -23,6 +23,14 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Expand cut-out to fill the sticker", isOn: $settings.expandCutoutToFill)
+            } header: {
+                Text("Cut-outs")
+            } footer: {
+                Text("Off keeps the subject at its original size.")
+            }
+
+            Section {
                 LabeledContent("Storage used", value: settings.storageSummary)
 
                 Button("Clear Cache") {

@@ -21,39 +21,54 @@ enum StickerEncoder {
     /// aim just under it so we can keep as many frames as possible.
     private static let animatedByteBudget = 480 * 1024
 
-    /// Quality ladder (libwebp 0...100). The full frame set is tried at ~80
-    /// first; only if it exceeds the budget do we step down. The last step (15)
-    /// is the last resort for motion-heavy clips — the full ladder is walked
-    /// BEFORE any frame is dropped, so motion is preserved at the cost of quality.
-    private static let animatedQualities: [Float] = [80, 60, 40, 25, 15]
+    /// Quality ladder (libwebp 0...100), ASCENDING. At each candidate frame count
+    /// the lowest quality is tried first: if even that overflows the budget, every
+    /// higher quality would too, so the candidate is abandoned without trying
+    /// them. Only when the lowest fits do qualities ramp up, and the highest that
+    /// fits wins. The whole quality ramp runs before any frames are dropped.
+    private static let animatedQualities: [Float] = [15, 25, 40, 60, 80]
 
-    /// libwebp animated method. Method 4 is the fast default; the native encoder
-    /// already exploits inter-frame redundancy, so an expensive method is not
-    /// worth the CPU here.
-    private static let animatedMethod = 4
+    /// libwebp compression method (0 = fastest … 6 = slowest). This is the single
+    /// biggest speed lever; the native encoder already exploits inter-frame
+    /// redundancy, so a slow method buys little. Normal attempts use 2; the large,
+    /// mostly-doomed first candidates use 0.
+    private static let animatedMethod = 2
+    private static let animatedFastMethod = 0
+
+    /// Frame count at or above which a candidate uses `animatedFastMethod`.
+    private static let fastMethodFrameThreshold = 96
+
+    /// Largest frame count the ladder starts from. A cut clip never needs to begin
+    /// at 220/240 frames, and every wasted large encode is seconds long.
+    private static let maxLadderStart = 160
 
     /// Fallback per-frame settings (SDWebImageWebPCoder), used only if the
-    /// native C encoder returns nil so we never regress to no sticker.
-    private static let fallbackMethod = 4
+    /// native C encoder returns nil so we never regress to no sticker. Low method
+    /// and a small frame cap keep this slow path from becoming a 40 s outlier.
+    private static let fallbackMethod = 2
     private static let fallbackPass = 1
+
+    /// Largest candidate frame count that will fall back to the per-frame static
+    /// encoder when the native encoder fails. Above this the candidate is simply
+    /// abandoned — a full static re-encode of many frames is far too slow.
+    private static let fallbackFrameLimit = 60
 
     /// Animated sticker from frames, using libwebp's native `WebPAnimEncoder`
     /// (inter-frame compression) via `WebPAnimationEncoder`.
     ///
-    /// Quality first, frames preserved: the full frame set is walked down the
-    /// whole quality ladder before ANY frames are dropped. Only if the lowest
-    /// quality still exceeds the budget are frames dropped — gently at first
-    /// (~75%, ~50%, then the `minFramesAfterDrop` floor), and as a last resort
-    /// down to `minFramesLastResort` frames (never fewer), so a motion-heavy clip
-    /// keeps its motion instead of collapsing to a handful of frames. The first
-    /// attempt that fits the budget is returned.
+    /// Fewest-encodes ladder, frames preserved. Candidate frame counts are
+    /// processed DESCENDING (most frames first, start capped at `maxLadderStart`);
+    /// at each candidate qualities are tried ASCENDING. The moment the lowest
+    /// quality overflows the budget the candidate is abandoned (higher qualities
+    /// would only be larger) and the next, smaller candidate is tried. The first
+    /// candidate whose lowest quality fits wins, and qualities then ramp up to the
+    /// highest that still fits — so the returned payload has the most frames and
+    /// the best quality that both fit.
     ///
-    /// Every normal attempt encodes with `minimize_size = false` (libwebp's fast
-    /// mode). Only if the entire fast ladder fails is a single last-resort ENCODE
-    /// run over the smallest frame set, at the lowest quality, with
-    /// `minimize_size = true`, so the slow multi-mode search can never dominate a
-    /// normal encode. Falls back to the per-frame static encoder only when the C
-    /// encoder itself fails.
+    /// Every normal attempt encodes with `minimize_size = false`. Only if the whole
+    /// ladder fails is a SINGLE last-resort encode run at the smallest frame count
+    /// and lowest quality with `minimize_size = true`. Falls back to the per-frame
+    /// static encoder only when the C encoder itself returns nil.
     ///
     /// The canvas stays exactly 512×512 (a WhatsApp requirement — dimensions are
     /// never reduced). Requires at least two frames; one frame is not a valid
@@ -95,25 +110,18 @@ enum StickerEncoder {
 
         let loop = max(0, loopCount)
 
-        // Full frame set first, then gently fewer frames (never below
-        // `minFramesLastResort`).
-        var candidates: [[Frame]] = [prepared]
-        candidates.append(contentsOf: frameLadder(prepared))
+        // Candidate frame counts, most frames first (start capped at
+        // `maxLadderStart`), descending to the last-resort floor.
+        let candidateCounts = frameCandidateCounts(sourceCount: prepared.count)
+        guard !candidateCounts.isEmpty else { return nil }
 
-        // Attempt order: every candidate at every quality with the FAST encoder
-        // setting first; only then ONE last-resort ENCODE over the smallest frame
-        // set, at the lowest quality, with the slow `minimize_size` mode. Bounding
-        // the slow mode to a single encode keeps "Optimizing WebP" from crawling.
-        var plans: [(frames: [Frame], minimizeSize: Bool, qualities: [Float])] =
-            candidates.map { ($0, false, animatedQualities) }
-        if let smallest = candidates.last, let lowest = animatedQualities.last {
-            plans.append((smallest, true, [lowest]))
-        }
+        // Pure policy: candidates descending, qualities ascending, a candidate is
+        // abandoned the moment its LOWEST quality overflows.
+        var ladder = EncodeLadder(frameCounts: candidateCounts, qualities: animatedQualities)
 
-        // Worst-case progress schedule: every plan's qualities. Each attempt
-        // reports its per-frame fraction; the bar is clamped below 1.0 and jumps
-        // to exactly 1.0 only once a payload is actually returned.
-        let plannedAttempts = max(1, plans.reduce(0) { $0 + $1.qualities.count })
+        // Progress estimate: one probe per candidate plus a quality ramp at the
+        // winning candidate. `report` clamps below 1.0 regardless.
+        let plannedAttempts = max(1, candidateCounts.count + animatedQualities.count)
         var attempt = 0
         // Monotonic + rate-limited: per-frame/per-attempt reports are clamped so
         // the bar never moves backwards, and intermediate frames inside the same
@@ -134,69 +142,129 @@ enum StickerEncoder {
         let started = CFAbsoluteTimeGetCurrent()
         #endif
 
-        for plan in plans {
-            // Abort promptly on cancellation; a thrown CancellationError upstream
-            // is treated by the UI as a silent cancel, so returning nil is safe.
-            if Task.isCancelled { return nil }
-            let candidate = plan.frames
+        /// Runs one native (or fallback) encode and reports whether it fits.
+        func runAttempt(frameCount: Int, quality: Float) -> (data: Data?, fit: Bool) {
+            let candidate = resample(prepared, to: frameCount)
             let durations = targetMilliseconds(candidate, targetDuration: targetDuration)
             let images = candidate.map(\.image)
-            for quality in plan.qualities {
-                if Task.isCancelled { return nil }
-                let attemptStarted = CFAbsoluteTimeGetCurrent()
-                let options = WebPAnimationEncoder.Options(
-                    quality: quality,
-                    method: animatedMethod,
-                    keyframeInterval: 10,
-                    loopCount: loop,
-                    minimizeSize: plan.minimizeSize
+            // Low method for the large, mostly-doomed candidates; 2 otherwise.
+            let method = frameCount >= fastMethodFrameThreshold ? animatedFastMethod : animatedMethod
+            let options = WebPAnimationEncoder.Options(
+                quality: quality,
+                method: method,
+                keyframeInterval: 10,
+                loopCount: loop,
+                minimizeSize: false
+            )
+            let attemptStarted = CFAbsoluteTimeGetCurrent()
+            let native = WebPAnimationEncoder.encode(
+                frames: images,
+                durationsMs: durations,
+                options: options,
+                onProgress: report
+            )
+            // The per-frame static fallback has no inter-frame compression and is
+            // orders of magnitude slower on many frames (a 120-frame fallback is
+            // the suspected 40 s outlier). Only run it for small candidates; a
+            // large candidate whose native encode failed is simply abandoned.
+            let data: Data?
+            if native == nil, frameCount <= fallbackFrameLimit {
+                Log.info(
+                    .encode,
+                    "webp native nil -> per-frame fallback frames=\(frameCount)"
                 )
-                let data = WebPAnimationEncoder.encode(
-                    frames: images,
-                    durationsMs: durations,
-                    options: options,
-                    onProgress: report
-                ) ?? encodeAnimatedFallback(
+                data = encodeAnimatedFallback(
                     images: images,
                     durationsMs: durations,
                     loopCount: loop,
                     quality: Double(quality) / 100.0
                 )
-                // Per-attempt tick: report the completed attempt even when the
-                // native encoder bailed before its first per-frame callback.
-                report(1.0)
-                attempt += 1
-                // 480 KB target is below the 500 KB hard cap, so this also
-                // guarantees WhatsApp compliance.
-                let attemptMs = (CFAbsoluteTimeGetCurrent() - attemptStarted) * 1000
-                let minimizeTag = plan.minimizeSize ? 1 : 0
-                if let data, data.count <= budget {
-                    Log.timing(
-                        .encode,
-                        "webp ladder WON q=\(Int(quality)) min=\(minimizeTag) frames=\(images.count) bytes=\(data.count)",
-                        ms: attemptMs
-                    )
-                    #if DEBUG
-                    let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
-                    print(String(
-                        format: "[StickerEncoder] animated total %.0fms: %d frames q=%d min=%d -> %d bytes",
-                        ms, images.count, Int(quality), minimizeTag, data.count
-                    ))
-                    #endif
-                    onProgress?(1.0)
-                    return data
-                }
+            } else {
+                data = native
+            }
+            // Per-attempt tick: report the completed attempt even when the native
+            // encoder bailed before its first per-frame callback.
+            report(1.0)
+            attempt += 1
+            // 480 KB target is below the 500 KB hard cap, so this also guarantees
+            // WhatsApp compliance.
+            let attemptMs = (CFAbsoluteTimeGetCurrent() - attemptStarted) * 1000
+            let fit = data.map { $0.count <= budget } ?? false
+            Log.timing(
+                .encode,
+                "webp ladder q=\(Int(quality)) method=\(method) frames=\(images.count) bytes=\(data?.count ?? 0) fit=\(fit)",
+                ms: attemptMs
+            )
+            return (data, fit)
+        }
+
+        // The last encode that fit — always the winner, since a candidate is only
+        // abandoned before any fit and the first candidate with a fit always wins.
+        var bestData: Data?
+        var action = ladder.start()
+        ladderLoop: while true {
+            // Abort promptly on cancellation; a thrown CancellationError upstream
+            // is treated by the UI as a silent cancel, so returning nil is safe.
+            if Task.isCancelled { return nil }
+            switch action {
+            case .exhausted:
+                break ladderLoop
+            case .win(let frameCount, let quality):
+                guard let data = bestData else { return nil }
                 Log.timing(
                     .encode,
-                    "webp ladder q=\(Int(quality)) min=\(minimizeTag) frames=\(images.count) bytes=\(data?.count ?? 0)",
-                    ms: attemptMs
+                    "webp ladder WON q=\(Int(quality)) frames=\(frameCount) bytes=\(data.count)",
+                    ms: 0
                 )
+                #if DEBUG
+                let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
+                print(String(
+                    format: "[StickerEncoder] animated total %.0fms: %d frames q=%d -> %d bytes",
+                    ms, frameCount, Int(quality), data.count
+                ))
+                #endif
+                onProgress?(1.0)
+                return data
+            case .encode(let frameCount, let quality):
+                let result = runAttempt(frameCount: frameCount, quality: quality)
+                if result.fit { bestData = result.data }
+                action = ladder.advance(fit: result.fit)
+            }
+        }
+
+        // Nothing in the ladder fit. Last resort: ONE slow `minimize_size` encode
+        // at the smallest candidate and lowest quality — never a slow ladder.
+        if let smallest = candidateCounts.last, let lowest = animatedQualities.first {
+            let candidate = resample(prepared, to: smallest)
+            let images = candidate.map(\.image)
+            let durations = targetMilliseconds(candidate, targetDuration: targetDuration)
+            let options = WebPAnimationEncoder.Options(
+                quality: lowest,
+                method: animatedMethod,
+                keyframeInterval: 10,
+                loopCount: loop,
+                minimizeSize: true
+            )
+            let attemptStarted = CFAbsoluteTimeGetCurrent()
+            if let data = WebPAnimationEncoder.encode(
+                frames: images,
+                durationsMs: durations,
+                options: options,
+                onProgress: report
+            ), data.count <= budget {
+                Log.timing(
+                    .encode,
+                    "webp ladder WON (minimize) q=\(Int(lowest)) frames=\(images.count) bytes=\(data.count)",
+                    ms: (CFAbsoluteTimeGetCurrent() - attemptStarted) * 1000
+                )
+                onProgress?(1.0)
+                return data
             }
         }
 
         #if DEBUG
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
-        print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms (exhausted quality + frame ladder)")
+        print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms (exhausted frame + quality ladder)")
         #endif
         Log.info(.encode, "webp ladder exhausted without a payload")
         // No `onProgress?(1.0)` here: a failed encode must never look finished.
@@ -522,37 +590,28 @@ enum StickerEncoder {
         return result
     }
 
-    /// Frame count the size-budget ladder must never drop below for normal clips.
-    /// Drops are gentle — keep ~75%, then ~50% — but never below this (or half
-    /// the set, whichever is larger), so a video never loses its motion. Only the
-    /// genuinely-necessary last-resort set goes lower, and never below
-    /// `minFramesLastResort`.
-    private static let minFramesAfterDrop = 120
-
     /// Absolute floor for the last-resort frame set. Preserving motion is worth
     /// more than fitting a noisy clip, so the ladder never drops below this.
     private static let minFramesLastResort = 8
 
-    /// Frame-drop ladder: ~75%, then ~50%, then the `minFramesAfterDrop` floor,
-    /// then a last-resort set that degrades in steps but never below
-    /// `minFramesLastResort` frames. Empty only when the set is too small to
-    /// downsample. `resample` preserves the total duration, so a dropped frame
-    /// only reduces fluidity, never the animation length.
-    private static func frameLadder(_ frames: [Frame]) -> [[Frame]] {
-        let count = frames.count
-        guard count > minFramesLastResort else { return [] }
-        let floor = min(count, max(minFramesAfterDrop, count / 2))
-        var counts = Set<Int>()
-        counts.insert(Int((Double(count) * 0.75).rounded()))
-        counts.insert(max(floor, Int((Double(count) * 0.5).rounded())))
-        counts.insert(floor)
-        // Last resort, below the gentle floor: degrade in steps instead of
-        // jumping to a tiny set, and never below `minFramesLastResort`.
-        counts.formUnion([120, 60, 30, 16, minFramesLastResort])
-        let valid = counts
-            .filter { $0 >= minFramesLastResort && $0 < count }
-            .sorted(by: >)
-        return valid.map { resample(frames, to: $0) }
+    /// Fixed rungs (below the capped start) the frame ladder descends through, so
+    /// a motion-heavy clip degrades in steps rather than jumping to a tiny set.
+    private static let lastResortRungs = [120, 90, 60, 45, 30, 20, 16]
+
+    /// Descending candidate frame counts for the size ladder. The start is capped
+    /// at `maxLadderStart` (a cut clip never begins at 220/240 frames), then the
+    /// list descends through `lastResortRungs` to `minFramesLastResort`. The source
+    /// count itself is always included, so a small clip is tried at full length.
+    /// Pure: no images — unit-testable.
+    static func frameCandidateCounts(sourceCount: Int) -> [Int] {
+        guard sourceCount >= 2 else { return [] }
+        let start = min(sourceCount, maxLadderStart)
+        var counts: Set<Int> = [start]
+        for rung in lastResortRungs where rung < start && rung >= minFramesLastResort {
+            counts.insert(rung)
+        }
+        if minFramesLastResort < start { counts.insert(minFramesLastResort) }
+        return counts.sorted(by: >)
     }
 
     /// Picks `count` evenly-spaced frames and spreads the total duration across
@@ -596,6 +655,85 @@ enum StickerEncoder {
         return UIGraphicsImageRenderer(size: size, format: format).image { _ in
             source.draw(in: CGRect(origin: origin, size: drawSize))
         }
+    }
+}
+
+/// Pure encode-ladder policy: no images, no encoding — unit-testable.
+///
+/// Order: candidate frame counts DESCENDING (most frames first), qualities
+/// ASCENDING (lowest first). At each candidate the lowest quality is tried first;
+/// if even that overflows the budget, every higher quality would too, so the
+/// candidate is abandoned and the next, smaller candidate is tried. When the
+/// lowest quality fits, qualities ramp up while they fit and the highest fitting
+/// quality wins. The first candidate (most frames) with any fit wins, so motion
+/// is preserved at the best quality that fits.
+struct EncodeLadder {
+    enum Action: Equatable {
+        /// Encode `frameCount` frames at `quality`.
+        case encode(frameCount: Int, quality: Float)
+        /// `frameCount`/`quality` is the largest fitting rung: return it.
+        case win(frameCount: Int, quality: Float)
+        /// Nothing fit: fail cleanly.
+        case exhausted
+    }
+
+    /// Candidate frame counts, most frames first.
+    let frameCounts: [Int]
+    /// Qualities to try at each candidate, lowest first.
+    let qualities: [Float]
+
+    private var candidateIndex = 0
+    private var qualityIndex = 0
+    private var started = false
+
+    init(frameCounts: [Int], qualities: [Float]) {
+        self.frameCounts = frameCounts
+        self.qualities = qualities
+    }
+
+    /// The first encode to run, or `.exhausted` when there is nothing to try.
+    mutating func start() -> Action {
+        guard !started else { return .exhausted }
+        started = true
+        candidateIndex = 0
+        qualityIndex = 0
+        guard let count = frameCounts.first, let quality = qualities.first else {
+            return .exhausted
+        }
+        return .encode(frameCount: count, quality: quality)
+    }
+
+    /// Records whether the last `.encode` fit the budget and returns the next
+    /// action.
+    mutating func advance(fit: Bool) -> Action {
+        guard started, candidateIndex < frameCounts.count, qualityIndex < qualities.count else {
+            return .exhausted
+        }
+        if !fit {
+            if qualityIndex == 0 {
+                // Lowest quality overflows: the whole candidate is impossible.
+                candidateIndex += 1
+                qualityIndex = 0
+                guard candidateIndex < frameCounts.count, let quality = qualities.first else {
+                    return .exhausted
+                }
+                return .encode(frameCount: frameCounts[candidateIndex], quality: quality)
+            }
+            // A higher quality overflowed: the previous one was the best fit.
+            return .win(
+                frameCount: frameCounts[candidateIndex],
+                quality: qualities[qualityIndex - 1]
+            )
+        }
+        // Fits: try the next-higher quality.
+        qualityIndex += 1
+        guard qualityIndex < qualities.count else {
+            return .win(
+                frameCount: frameCounts[candidateIndex],
+                quality: qualities[qualities.count - 1]
+            )
+        }
+        return .encode(frameCount: frameCounts[candidateIndex], quality: qualities[qualityIndex])
     }
 }
 

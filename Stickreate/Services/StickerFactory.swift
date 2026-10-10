@@ -34,6 +34,7 @@ enum StickerFactory {
     static func encodeStatic(
         _ image: UIImage,
         source: StickerSource? = nil,
+        expandToFill: Bool = SettingsStore.shared.expandCutoutToFill,
         onStage: ((StickerCreationStage) -> Void)? = nil
     ) throws -> StickerItem {
         // Static creation runs only the compression + saving stages, so it emits
@@ -43,8 +44,9 @@ enum StickerFactory {
         var progress = ProgressAccumulator()
         onStage?(.compressing(progress.update(0, in: .compression)))
         // Auto-fit a cut-out subject to fill the canvas; opaque photos and fully
-        // transparent images pass through unchanged.
-        let fitted = StickerEncoder.alphaFitted(image)
+        // transparent images pass through unchanged. Skipped when the user keeps
+        // the subject's original framing.
+        let fitted = expandToFill ? StickerEncoder.alphaFitted(image) : image
         guard let stickerData = StickerEncoder.staticSticker(from: fitted),
               let previewData = StickerEncoder.previewPNG(from: fitted, size: 512) else {
             throw Failure.failed("Couldn't encode this sticker.")
@@ -326,6 +328,7 @@ enum StickerFactory {
         removeBackground: Bool,
         source: StickerSource?,
         targetDuration: TimeInterval? = nil,
+        expandToFill: Bool = SettingsStore.shared.expandCutoutToFill,
         onProgress: ((Double) -> Void)? = nil,
         onStage: ((StickerCreationStage) -> Void)? = nil
     ) async throws -> StickerItem {
@@ -356,10 +359,16 @@ enum StickerFactory {
         }
 
         // One shared alpha-fit box for the whole clip: a cut-out subject fills
-        // the canvas without per-frame scale jitter. No-op when opaque.
-        let fitStarted = CFAbsoluteTimeGetCurrent()
-        let encoded = alphaFittedFrames(usable)
-        Log.timing(.vision, "alpha-fit frames=\(encoded.count)", ms: (CFAbsoluteTimeGetCurrent() - fitStarted) * 1000)
+        // the canvas without per-frame scale jitter. No-op when opaque, and
+        // skipped entirely when the user keeps the subject's original framing.
+        let encoded: [Frame]
+        if expandToFill {
+            let fitStarted = CFAbsoluteTimeGetCurrent()
+            encoded = alphaFittedFrames(usable)
+            Log.timing(.vision, "alpha-fit frames=\(encoded.count)", ms: (CFAbsoluteTimeGetCurrent() - fitStarted) * 1000)
+        } else {
+            encoded = usable
+        }
 
         // A cancelled creation must abort BEFORE the expensive encode, not just
         // discard its result. The caller treats a thrown CancellationError as a
