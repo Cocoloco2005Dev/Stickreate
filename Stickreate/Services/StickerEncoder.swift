@@ -143,12 +143,18 @@ enum StickerEncoder {
         #endif
 
         /// Runs one native (or fallback) encode and reports whether it fits.
-        func runAttempt(frameCount: Int, quality: Float) -> (data: Data?, fit: Bool) {
+        func runAttempt(frameCount: Int, quality: Float) -> (data: Data?, fit: Bool, ms: Double) {
             let candidate = resample(prepared, to: frameCount)
             let durations = targetMilliseconds(candidate, targetDuration: targetDuration)
             let images = candidate.map(\.image)
-            // Low method for the large, mostly-doomed candidates; 2 otherwise.
-            let method = frameCount >= fastMethodFrameThreshold ? animatedFastMethod : animatedMethod
+            // Method 0 is a speed PROBE only: it is used for the q15 probe on
+            // large candidates (which usually fail and are abandoned). The
+            // quality ramp — and therefore the returned payload — always uses
+            // method 2.
+            let isProbe = quality == animatedQualities.first
+            let method = (isProbe && frameCount >= fastMethodFrameThreshold)
+                ? animatedFastMethod
+                : animatedMethod
             let options = WebPAnimationEncoder.Options(
                 quality: quality,
                 method: method,
@@ -195,12 +201,13 @@ enum StickerEncoder {
                 "webp ladder q=\(Int(quality)) method=\(method) frames=\(images.count) bytes=\(data?.count ?? 0) fit=\(fit)",
                 ms: attemptMs
             )
-            return (data, fit)
+            return (data, fit, attemptMs)
         }
 
         // The last encode that fit — always the winner, since a candidate is only
         // abandoned before any fit and the first candidate with a fit always wins.
         var bestData: Data?
+        var bestMs: Double = 0
         var action = ladder.start()
         ladderLoop: while true {
             // Abort promptly on cancellation; a thrown CancellationError upstream
@@ -214,7 +221,7 @@ enum StickerEncoder {
                 Log.timing(
                     .encode,
                     "webp ladder WON q=\(Int(quality)) frames=\(frameCount) bytes=\(data.count)",
-                    ms: 0
+                    ms: bestMs
                 )
                 #if DEBUG
                 let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
@@ -227,7 +234,10 @@ enum StickerEncoder {
                 return data
             case .encode(let frameCount, let quality):
                 let result = runAttempt(frameCount: frameCount, quality: quality)
-                if result.fit { bestData = result.data }
+                if result.fit {
+                    bestData = result.data
+                    bestMs = result.ms
+                }
                 action = ladder.advance(fit: result.fit)
             }
         }
@@ -246,16 +256,36 @@ enum StickerEncoder {
                 minimizeSize: true
             )
             let attemptStarted = CFAbsoluteTimeGetCurrent()
-            if let data = WebPAnimationEncoder.encode(
+            let native = WebPAnimationEncoder.encode(
                 frames: images,
                 durationsMs: durations,
                 options: options,
                 onProgress: report
+            )
+            if let native, native.count <= budget {
+                Log.timing(
+                    .encode,
+                    "webp ladder WON (minimize) q=\(Int(lowest)) frames=\(images.count) bytes=\(native.count)",
+                    ms: (CFAbsoluteTimeGetCurrent() - attemptStarted) * 1000
+                )
+                onProgress?(1.0)
+                return native
+            }
+            // Safety net: the native last-resort failed. Run the per-frame static
+            // fallback ONCE on the smallest candidate so creation never regresses
+            // to "no sticker" when a payload is possible. Bounded to this call;
+            // if it also fails the contract is a clean nil.
+            let fallbackStarted = CFAbsoluteTimeGetCurrent()
+            if let data = encodeAnimatedFallback(
+                images: images,
+                durationsMs: durations,
+                loopCount: loop,
+                quality: Double(lowest) / 100.0
             ), data.count <= budget {
                 Log.timing(
                     .encode,
-                    "webp ladder WON (minimize) q=\(Int(lowest)) frames=\(images.count) bytes=\(data.count)",
-                    ms: (CFAbsoluteTimeGetCurrent() - attemptStarted) * 1000
+                    "webp ladder WON (fallback) q=\(Int(lowest)) frames=\(images.count) bytes=\(data.count)",
+                    ms: (CFAbsoluteTimeGetCurrent() - fallbackStarted) * 1000
                 )
                 onProgress?(1.0)
                 return data

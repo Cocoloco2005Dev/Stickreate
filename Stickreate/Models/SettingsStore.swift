@@ -6,11 +6,26 @@ import Foundation
 final class SettingsStore {
     static let shared = SettingsStore()
 
+    /// In-app language preference. `.system` follows the device / per-app
+    /// setting; `.english` / `.spanish` pin the app bundle to that language.
+    enum AppLanguage: String, CaseIterable, Identifiable {
+        case system
+        case english
+        case spanish
+
+        var id: String { rawValue }
+    }
+
     private enum Keys {
         static let keepOriginalSources = "stickreate.keepOriginalSources"
         static let hasSeenOnboarding = "stickreate.hasSeenOnboarding"
         static let expandCutoutToFill = "stickreate.expandCutoutToFill"
+        static let appLanguage = "stickreate.appLanguage"
     }
+
+    /// `UserDefaults` key the OS reads to override the app bundle's language.
+    /// Honoured for this app's bundle on the next launch.
+    private static let appleLanguagesKey = "AppleLanguages"
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -18,6 +33,7 @@ final class SettingsStore {
     private var storedKeepOriginalSources: Bool
     private var storedHasSeenOnboarding: Bool
     private var storedExpandCutoutToFill: Bool
+    private var storedAppLanguage: AppLanguage
 
     /// Cached storage total, recomputed by `refreshStorageSummary()`.
     private var cachedStorageSummary: String
@@ -68,11 +84,41 @@ final class SettingsStore {
         }
     }
 
+    /// In-app language selection, persisted under `stickreate.appLanguage`.
+    ///
+    /// Changing it has no visible effect until the app bundle reloads, so the
+    /// UI asks the user to reopen the app; call
+    /// `applyAppLanguagePreference()` when the value changes.
+    var appLanguage: AppLanguage {
+        get { storedAppLanguage }
+        set {
+            storedAppLanguage = newValue
+            defaults.set(newValue.rawValue, forKey: Keys.appLanguage)
+        }
+    }
+
+    /// Applies `appLanguage` to the app bundle's language override.
+    ///
+    /// `LocalizedStringKey` resolves through the bundle, so the change only
+    /// takes effect on the next launch of the app.
+    func applyAppLanguagePreference() {
+        switch appLanguage {
+        case .system:
+            defaults.removeObject(forKey: Self.appleLanguagesKey)
+        case .english:
+            defaults.set(["en"], forKey: Self.appleLanguagesKey)
+        case .spanish:
+            defaults.set(["es"], forKey: Self.appleLanguagesKey)
+        }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.storedKeepOriginalSources = defaults.object(forKey: Keys.keepOriginalSources) as? Bool ?? true
         self.storedHasSeenOnboarding = defaults.object(forKey: Keys.hasSeenOnboarding) as? Bool ?? false
         self.storedExpandCutoutToFill = defaults.object(forKey: Keys.expandCutoutToFill) as? Bool ?? true
+        self.storedAppLanguage = (defaults.string(forKey: Keys.appLanguage))
+            .flatMap(AppLanguage.init(rawValue:)) ?? .system
         self.cachedStorageSummary = Self.computeStorageSummary()
     }
 

@@ -1,6 +1,76 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "English" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inglés"
+          }
+        }
+      }
+    },
+    "Español" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Español"
+          }
+        }
+      }
+    },
+    "Language" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Idioma"
+          }
+        }
+      }
+    },
+    "Reopen Stickreate to apply. You can also set the language for this app in iOS Settings under Stickreate." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reabrí Stickreate para aplicar. También podés elegir el idioma de esta app en Ajustes de iOS, en Stickreate."
+          }
+        }
+      }
+    },
+    "Reopen to apply" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reabrí para aplicar"
+          }
+        }
+      }
+    },
+    "System" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sistema"
+          }
+        }
+      }
+    },
+    "The new language applies the next time you open Stickreate." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "El nuevo idioma se aplica la próxima vez que abras Stickreate."
+          }
+        }
+      }
+    },
     "Add" : {
       "localizations" : {
         "es" : {
@@ -631,6 +701,16 @@
         }
       }
     },
+    "Cut-outs" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Recortes"
+          }
+        }
+      }
+    },
     "Delete" : {
       "localizations" : {
         "es" : {
@@ -857,6 +937,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Carpetas existentes"
+          }
+        }
+      }
+    },
+    "Expand cut-out to fill the sticker" : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Expandir el recorte para llenar el sticker"
           }
         }
       }
@@ -1387,6 +1477,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "No hay nada para borrar."
+          }
+        }
+      }
+    },
+    "Off keeps the subject at its original size." : {
+      "localizations" : {
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Desactivado mantiene el sujeto en su tamaño original."
           }
         }
       }

@@ -11,6 +11,7 @@ struct SettingsView: View {
     @State private var cacheNote: String?
     @State private var logCount = DebugLog.shared.count
     @State private var logNote: String?
+    @State private var showsLanguageRestartAlert = false
 
     var body: some View {
         Form {
@@ -86,6 +87,22 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("Language", selection: $settings.appLanguage) {
+                    Text("System").tag(SettingsStore.AppLanguage.system)
+                    Text("English").tag(SettingsStore.AppLanguage.english)
+                    Text("Español").tag(SettingsStore.AppLanguage.spanish)
+                }
+                .onChange(of: settings.appLanguage) { _, _ in
+                    settings.applyAppLanguagePreference()
+                    showsLanguageRestartAlert = true
+                }
+            } header: {
+                Text("Language")
+            } footer: {
+                Text("Reopen Stickreate to apply. You can also set the language for this app in iOS Settings under Stickreate.")
+            }
+
+            Section {
                 LabeledContent("App", value: "Stickreate")
                 LabeledContent("Version", value: Bundle.main.shortVersion)
                 LabeledContent("Build", value: Bundle.main.buildNumber)
@@ -96,6 +113,11 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .haptic(.success, trigger: cacheNote)
         .onAppear { logCount = DebugLog.shared.count }
+        .alert("Reopen to apply", isPresented: $showsLanguageRestartAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The new language applies the next time you open Stickreate.")
+        }
     }
 
     private var cacheIcon: String {

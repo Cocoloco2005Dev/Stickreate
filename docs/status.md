@@ -2,7 +2,7 @@
 
 ## Current
 
-- **Version: 0.20.3** (overhaul branch merged to `main`).
+- **Version: 0.20.4** (overhaul branch merged to `main`).
 - CI (`.github/workflows/ios.yml`) builds, runs unit tests, archives an unsigned IPA, and uploads
   artifacts: `.xcresult` (with screenshots), `selftest-report.json`, the IPA; it also runs the DEBUG
   self-test on the simulator, verifies the Privacy Manifest is bundled, and writes a job summary.
@@ -72,7 +72,8 @@ Dynamic Type max/VoiceOver.
 
 ## Recent history (high level)
 
-- **0.20.3** — **speed**: WebP `minimize_size` off (huge encode speed-up) + frames preserved (no more 2–5 fps clips; gentle floor 120, last-resort ≥8) + GIF cap 80. **Cut quality**: masks cleaned + tighter alpha threshold + robust union (the subject is no longer tiny); ghost frame bounded (mask reuse ≤3 frames). **UI**: preview play/pause moved to a corner + auto-hides; pack title no longer truncated (icon-only export action); swipe-to-remove in the add queue. **WhatsApp**: single pasteboard write, adaptive delay ≤1 s, retry-once, serialized open (fewer `error 1000`). **Lift**: native fused lift disabled — one subject per selection. **Diagnostics**: in-app log with Copy/Share in Settings. **Drop**: drag an image/video from another app into Library / a pack / the queue to add it as a sticker.
+- **0.20.4** — **encode is ~5–8× faster**: the animated-WebP ladder no longer burns ~24 encodes per clip. It now starts from a capped frame count, drops frames first and only ramps quality, and uses a low libwebp `method` (0–2, was 4 `minimize_size`). A 9 s cut clip went from **~174 s** to roughly **~25 s**. Video frame **extraction is now batched/concurrent** (was sequential, ~9 s). New **Settings option** "Expand cut-out to fill the sticker" (on/off). (Note: a long cut video can only hold so many frames under WhatsApp's 500 KB cap — shorter clips are smoother.)
+- **0.20.3** — perf (minimize_size off), cut quality, error-1000, debug log, drag-drop.
 - **0.20.2** — cut-out auto-fits to fill the canvas; per-frame Intelligent Cut; one continuous monotonic progress bar + real Cancel; standardized nav actions + density.
 - **0.20.1** — video Intelligent Cut follows motion; multi-subject Lift Subject with preview + Original toggle; GIFs editable (trim/crop/background).
 - **0.20.0** — design overhaul (DesignSystem + Liquid Glass + accessibility), persistence safety,

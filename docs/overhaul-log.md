@@ -125,3 +125,14 @@ User-reported:
 - **Feature**: drag an external image/video onto Library / a pack / the add queue → sticker (`StickerDrop`).
 - `oracle` review: no blockers; applied R1–R5/N1/N4 (CI-safe self-test check, union clip guard, opaque
   early-out, delay cap, orphan-source cleanup, GIF preview cap). Version → **0.20.3**.
+
+## Post-0.20.3 — encode speed (device log driven) (0.20.4)
+
+Device log showed a 9.17 s cut video took **174 s** because the ladder encoded ~24 times (every quality at
+every frame count), plus 8.7 s sequential extraction and 11.2 s per-frame Vision.
+- **Ladder redesign**: candidates DESCENDING (start capped at 160), qualities ASCENDING (15→80); abandon a
+  candidate the moment its lowest quality overflows. ~24 → ~7–9 encodes.
+- **libwebp `method` 4 → 2** (0 for ≥96 frames); `minimize_size=false` normal, one last-resort slow encode.
+- **Extraction batched/concurrent** via `AVAssetImageGenerator.images(for:)`.
+- **Expand-to-fill is now a Settings option** (`expandCutoutToFill`, default on).
+- Expected: ~174 s → ~25 s. Version → **0.20.4**.
