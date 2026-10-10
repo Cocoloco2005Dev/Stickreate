@@ -411,7 +411,7 @@ enum StickerEncoder {
         // Too few frames to tell a bad mask from a real size change: keep all.
         guard bounds.count >= 4 else { return unionAll(bounds) }
         let oriented = first.upNormalized() ?? first
-        let frameArea = (oriented.cgImage?.width ?? 0) * (oriented.cgImage?.height ?? 0)
+        let frameArea = CGFloat((oriented.cgImage?.width ?? 0) * (oriented.cgImage?.height ?? 0))
         let areas = bounds.map { $0.width * $0.height }.sorted()
         let median = areas[areas.count / 2]
         let kept = bounds.filter { box in
