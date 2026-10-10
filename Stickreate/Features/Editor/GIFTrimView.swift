@@ -391,7 +391,7 @@ struct GIFTrimView: View {
             guard let data = try? Data(contentsOf: StickerSourceStore.url(for: source)) else {
                 throw StickerFactory.Failure.empty
             }
-            let extracted = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
+            let extracted = try FrameExtractor.frames(fromGIF: data, maxFrames: 80)
             frames = extracted
             buildFilmstrip(extracted)
             frameAspect = extracted.first.map { $0.image.size.width / max($0.image.size.height, 1) }

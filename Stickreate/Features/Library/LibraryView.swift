@@ -16,6 +16,9 @@ struct LibraryView: View {
     /// Sources waiting for the destination-pack sheet, so a multi-item drop is
     /// offered one at a time instead of silently dropping the extras.
     @State private var mediaQueue: [StickerSource] = []
+    /// Total sticker count when the current import sheet was presented, used to
+    /// tell whether the sheet actually added the media.
+    @State private var presentedStickerBaseline = 0
     @State private var isImportingMedia = false
     @State private var showingImportedBanner = false
 
@@ -585,13 +588,24 @@ struct LibraryView: View {
     /// Presents the next queued source if no import sheet is already showing.
     private func advanceMediaQueue() {
         guard importedMedia == nil, let next = mediaQueue.first else { return }
+        presentedStickerBaseline = stickerCount
         importedMedia = ImportedMedia(source: next)
     }
 
-    /// Drops the source whose sheet just closed, then offers the next one.
+    /// Drops the source whose sheet just closed. If no sticker was added, the
+    /// imported (already-copied) source is deleted rather than left orphaned,
+    /// then the next queued source is offered.
     private func mediaSheetDismissed() {
+        if let dismissed = mediaQueue.first, stickerCount == presentedStickerBaseline {
+            StickerSourceStore.delete(dismissed)
+        }
         if !mediaQueue.isEmpty { mediaQueue.removeFirst() }
         advanceMediaQueue()
+    }
+
+    /// Total stickers across every pack; a delta tells whether an import added one.
+    private var stickerCount: Int {
+        store.packs.reduce(0) { $0 + $1.stickers.count }
     }
 
     /// Transient, non-blocking confirmation that a pack file landed.

@@ -109,3 +109,19 @@ User-reported, device-visible:
   Back/Cancel), `CreationProgressCard` (live % + Cancel), density in Library/Pack editor/Export.
 - `oracle` review of the whole diff: no blockers; applied R1–R4 (early cancel, continuous bar, alpha-fit
   early-out, in-place crop). Version → **0.20.2**.
+
+## Post-0.20.2 — perf, cut quality, error 1000, lift, diagnostics, drag-drop (0.20.3)
+
+User-reported:
+- **Speed**: `minimize_size` off by default (was the slowest libwebp mode) with a single last-resort slow
+  encode; frames preserved (gentle floor 120, last-resort ≥8; qualities down to 15); GIF cap 80.
+- **Cut quality**: `cleanedMask` + alpha threshold ≥16 + robust `alphaUnion` (speck filter, bad-mask guard,
+  opaque early-out) so the subject fills instead of shrinking; ghost frame bounded (`maxMaskReuseAge=3`).
+- **UI**: preview play/pause to a corner + auto-hide; `PrimaryActionItem` icon-only for the pack export so
+  the title isn't truncated; swipe-to-remove in the add queue.
+- **WhatsApp**: single `setItems`, size-adaptive delay (≤1 s), retry-once, serialized `open` task.
+- **Lift**: transparent touch shield disables VisionKit's native (fused) lift; chips/tap select one subject.
+- **Diagnostics**: `DebugLog` ring buffer + `Log` timing/info/error (release-safe) + Settings Copy/Share/Clear.
+- **Feature**: drag an external image/video onto Library / a pack / the add queue → sticker (`StickerDrop`).
+- `oracle` review: no blockers; applied R1–R5/N1/N4 (CI-safe self-test check, union clip guard, opaque
+  early-out, delay cap, orphan-source cleanup, GIF preview cap). Version → **0.20.3**.

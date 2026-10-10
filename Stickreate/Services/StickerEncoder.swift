@@ -49,10 +49,11 @@ enum StickerEncoder {
     /// attempt that fits the budget is returned.
     ///
     /// Every normal attempt encodes with `minimize_size = false` (libwebp's fast
-    /// mode). Only if the entire fast ladder fails is a single last-resort pass
-    /// run over the smallest frame set with `minimize_size = true`, so the slow
-    /// multi-mode search can never dominate a normal encode. Falls back to the
-    /// per-frame static encoder only when the C encoder itself fails.
+    /// mode). Only if the entire fast ladder fails is a single last-resort ENCODE
+    /// run over the smallest frame set, at the lowest quality, with
+    /// `minimize_size = true`, so the slow multi-mode search can never dominate a
+    /// normal encode. Falls back to the per-frame static encoder only when the C
+    /// encoder itself fails.
     ///
     /// The canvas stays exactly 512×512 (a WhatsApp requirement — dimensions are
     /// never reduced). Requires at least two frames; one frame is not a valid
@@ -100,18 +101,19 @@ enum StickerEncoder {
         candidates.append(contentsOf: frameLadder(prepared))
 
         // Attempt order: every candidate at every quality with the FAST encoder
-        // setting first; only then ONE last-resort pass over the smallest frame
-        // set with the slow `minimize_size` mode. Bounding the slow mode to a
-        // single candidate keeps "Optimizing WebP" from crawling.
-        var plans: [(frames: [Frame], minimizeSize: Bool)] = candidates.map { ($0, false) }
-        if let smallest = candidates.last {
-            plans.append((smallest, true))
+        // setting first; only then ONE last-resort ENCODE over the smallest frame
+        // set, at the lowest quality, with the slow `minimize_size` mode. Bounding
+        // the slow mode to a single encode keeps "Optimizing WebP" from crawling.
+        var plans: [(frames: [Frame], minimizeSize: Bool, qualities: [Float])] =
+            candidates.map { ($0, false, animatedQualities) }
+        if let smallest = candidates.last, let lowest = animatedQualities.last {
+            plans.append((smallest, true, [lowest]))
         }
 
-        // Worst-case progress schedule: every plan at every quality. Each
-        // attempt reports its per-frame fraction; the bar is clamped below 1.0
-        // and jumps to exactly 1.0 only once a payload is actually returned.
-        let plannedAttempts = max(1, plans.count * animatedQualities.count)
+        // Worst-case progress schedule: every plan's qualities. Each attempt
+        // reports its per-frame fraction; the bar is clamped below 1.0 and jumps
+        // to exactly 1.0 only once a payload is actually returned.
+        let plannedAttempts = max(1, plans.reduce(0) { $0 + $1.qualities.count })
         var attempt = 0
         // Monotonic + rate-limited: per-frame/per-attempt reports are clamped so
         // the bar never moves backwards, and intermediate frames inside the same
@@ -139,7 +141,7 @@ enum StickerEncoder {
             let candidate = plan.frames
             let durations = targetMilliseconds(candidate, targetDuration: targetDuration)
             let images = candidate.map(\.image)
-            for quality in animatedQualities {
+            for quality in plan.qualities {
                 if Task.isCancelled { return nil }
                 let attemptStarted = CFAbsoluteTimeGetCurrent()
                 let options = WebPAnimationEncoder.Options(
@@ -385,27 +387,38 @@ enum StickerEncoder {
     /// transparency. Used to crop a whole animation to ONE shared box so the
     /// subject fills the canvas without per-frame scale jitter.
     ///
-    /// Bounds are taken from the (already mask-cleaned) frames and outlier boxes
-    /// are dropped: a stray speck or leftover halo blob shows up as a box whose
-    /// area is wildly different from the median, and a raw union would let it
-    /// inflate the shared box and shrink the subject. The filter is generous
-    /// (8×) so a subject that gradually moves or changes size is never discarded.
-    /// ponytail: area-band heuristic, not connected-component analysis — swap in
-    /// blob filtering if specks ever survive the mask threshold.
+    /// Early-out: when the FIRST frame has no transparency (the common non-cut
+    /// path) this returns `nil` immediately, without scanning the remaining
+    /// frames — an opaque video costs one scan, not one per frame.
+    ///
+    /// Bounds come from the (already mask-cleaned) frames. A box covering an
+    /// implausibly large fraction of the frame (> 50%) is a broken mask and is
+    /// dropped; a box far smaller than the median is a stray speck and is also
+    /// dropped. The upper guard cannot clip a legitimately growing subject (a
+    /// real subject stays well under half the canvas); a shrinking subject's
+    /// smaller boxes are covered by the union of its larger ones.
+    /// ponytail: area heuristics, not connected-component analysis — swap in blob
+    /// filtering if specks ever survive the mask threshold.
     static func alphaUnion(of images: [UIImage]) -> CGRect? {
-        let bounds = images.compactMap { alphaBounds(of: $0) }
-        guard !bounds.isEmpty else { return nil }
+        guard let first = images.first, let firstBounds = alphaBounds(of: first) else {
+            return nil
+        }
+        var bounds = [firstBounds]
+        bounds.append(contentsOf: images.dropFirst().compactMap { alphaBounds(of: $0) })
         func unionAll(_ rects: [CGRect]) -> CGRect {
             rects.dropFirst().reduce(rects[0]) { $0.union($1) }
         }
-        // Too few frames to tell an outlier from a real size change: keep all.
+        // Too few frames to tell a bad mask from a real size change: keep all.
         guard bounds.count >= 4 else { return unionAll(bounds) }
+        let oriented = first.upNormalized() ?? first
+        let frameArea = (oriented.cgImage?.width ?? 0) * (oriented.cgImage?.height ?? 0)
         let areas = bounds.map { $0.width * $0.height }.sorted()
         let median = areas[areas.count / 2]
-        guard median > 0 else { return unionAll(bounds) }
-        let kept = bounds.filter { bounds in
-            let area = bounds.width * bounds.height
-            return area >= median / 8 && area <= median * 8
+        let kept = bounds.filter { box in
+            let area = box.width * box.height
+            if frameArea > 0, area > frameArea / 2 { return false } // bad-mask guard
+            if median > 0, area < median / 8 { return false } // stray-speck guard
+            return true
         }
         return unionAll(kept.isEmpty ? bounds : kept)
     }

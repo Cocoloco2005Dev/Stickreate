@@ -168,16 +168,38 @@ enum SelfTest {
         }
     }
 
-    /// Worst-case (high-entropy noise) clip encodes within budget; time recorded.
+    /// Worst-case (high-entropy noise) clip. Under the preserve-frames encoder
+    /// policy an incompressible clip may legitimately not fit the 500 KB budget,
+    /// so this check passes when a compliant payload is returned OR when the
+    /// encoder returns nil cleanly. The invariant asserted is: a non-nil payload
+    /// is ≤500 KB, progress never moves backwards, and a nil result never faked
+    /// 100%.
     private static func worstCaseCheck() -> SelfTestReport.Check {
         measure("worst-case clip within budget") {
             let frames = makeNoiseFrames(count: 6)
             guard frames.count >= 2 else { throw Failure(message: "noise fixture unavailable") }
             let clock = CFAbsoluteTimeGetCurrent()
-            guard let data = StickerEncoder.animatedSticker(from: frames) else {
-                throw Failure(message: "encoder returned nil for a noise clip")
-            }
+            var fractions: [Double] = []
+            let data = StickerEncoder.animatedSticker(from: frames) { fractions.append($0) }
             let elapsed = ms(since: clock)
+
+            // No fake finish: a nil result must never have reported 1.0.
+            guard data != nil || !fractions.contains(1.0) else {
+                throw Failure(message: "encoder reported 1.0 without a payload")
+            }
+            guard fractions.allSatisfy({ $0 <= 1.0 }) else {
+                throw Failure(message: "progress exceeded 1.0")
+            }
+            guard zip(fractions, fractions.dropFirst()).allSatisfy({ $0.0 <= $0.1 }) else {
+                throw Failure(message: "progress moved backwards")
+            }
+
+            guard let data else {
+                Log.encode.info(
+                    "worst-case \(frames.count, privacy: .public) noise frames -> no payload (clean failure) in \(Int(elapsed), privacy: .public)ms"
+                )
+                return "\(frames.count) noise frames, no payload (clean failure) in \(Int(elapsed)) ms"
+            }
             Log.encode.info(
                 "worst-case \(frames.count, privacy: .public) noise frames -> \(data.count, privacy: .public) bytes in \(Int(elapsed), privacy: .public)ms"
             )

@@ -164,11 +164,12 @@ enum WhatsAppExporter {
         Log.info(.export, "pasteboard write done bytes=\(payload.count)")
     }
 
-    /// Size-adaptive pre-open delay, bounded to 0.4–1.2 s: small packs open
+    /// Size-adaptive pre-open delay, bounded to 0.4–1.0 s: small packs open
     /// sooner, multi-MB packs get longer for WhatsApp to read the pasteboard.
+    /// Capped at 1.0 s — the community-tested open window is ~0.5–1.0 s.
     private static func openDelay(forByteCount bytes: Int) -> TimeInterval {
-        let scaled = 0.4 + Double(bytes) / 4_000_000 * 0.8
-        return min(max(scaled, 0.4), 1.2)
+        let scaled = 0.4 + Double(bytes) / 4_000_000 * 0.6
+        return min(max(scaled, 0.4), 1.0)
     }
 
     /// Opens WhatsApp's sticker importer and reports whether the system accepted it.

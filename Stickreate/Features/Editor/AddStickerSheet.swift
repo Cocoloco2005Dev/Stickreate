@@ -107,11 +107,13 @@ struct AddStickerSheet: View {
     private enum Notice: Identifiable, Equatable {
         case error(String)
         case skipped(String)
+        case full(String)
 
         var id: String {
             switch self {
             case .error(let message): "error-\(message)"
             case .skipped(let message): "skipped-\(message)"
+            case .full(let message): "full-\(message)"
             }
         }
 
@@ -119,12 +121,13 @@ struct AddStickerSheet: View {
             switch self {
             case .error: "Something went wrong"
             case .skipped: "Only one kind per pack"
+            case .full: "Pack is full"
             }
         }
 
         var message: String {
             switch self {
-            case .error(let message), .skipped(let message): message
+            case .error(let message), .skipped(let message), .full(let message): message
             }
         }
     }
@@ -620,21 +623,41 @@ struct AddStickerSheet: View {
     }
 
     /// Files a dropped item (or items) into the queue, applying the same
-    /// single-kind filtering as the picker/Files paths.
+    /// single-kind filtering as the picker/Files paths. Anything that can't be
+    /// queued (pack full, or the wrong kind) is deleted so its already-copied
+    /// source doesn't linger orphaned, and the user is told why.
     @MainActor
     private func enqueueDropped(_ sources: [StickerSource]) {
         guard !sources.isEmpty else { return }
 
+        var added = 0
         var skipped = 0
+        var overflow = 0
         for source in sources {
-            guard queue.count < remaining else { break }
+            guard queue.count < remaining else {
+                overflow += 1
+                StickerSourceStore.delete(source)
+                continue
+            }
             guard kindMatchesTarget(stickerKind(for: source)) else {
                 skipped += 1
+                StickerSourceStore.delete(source)
                 continue
             }
             queue.append(QueueItem(source: source))
+            added += 1
         }
-        reportSkipped(skipped)
+
+        if overflow > 0 {
+            if added == 0 {
+                notice = .full("Pack is full — nothing was added.")
+            } else {
+                let noun = overflow == 1 ? "item" : "items"
+                notice = .full("Pack is full — \(overflow) \(noun) \(overflow == 1 ? "wasn't" : "weren't") added.")
+            }
+        } else {
+            reportSkipped(skipped)
+        }
     }
 
     @MainActor
