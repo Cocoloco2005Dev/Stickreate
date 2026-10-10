@@ -16,6 +16,7 @@ struct PackEditorView: View {
     @State private var draftName = ""
 
     @State private var editTask: EditTask?
+    @State private var droppedSource: DroppedSource?
     @State private var emojiTarget: StickerItem?
     @State private var previewItem: StickerItem?
     @State private var pendingPreviewAction: PreviewAction?
@@ -37,6 +38,12 @@ struct PackEditorView: View {
     private struct ShareItem: Identifiable {
         let id = UUID()
         let url: URL
+    }
+
+    /// A just-dropped source waiting for its editor sheet.
+    private struct DroppedSource: Identifiable {
+        let id = UUID()
+        let source: StickerSource
     }
 
     /// One alert channel so rename, delete, and errors can never fight over
@@ -72,6 +79,11 @@ struct PackEditorView: View {
 
     var body: some View {
         content
+            .stickerDrop { sources in
+                handleDrop(sources)
+            } onError: { message in
+                presentDropError(message)
+            }
             .navigationTitle(pack?.name ?? "Pack")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
@@ -80,6 +92,9 @@ struct PackEditorView: View {
             }
             .sheet(isPresented: $showingExport) {
                 ExportSheet(store: store, packID: packID)
+            }
+            .sheet(item: $droppedSource) { dropped in
+                droppedEditor(for: dropped.source)
             }
             .sheet(item: $editTask) { task in
                 editSheet(for: task)
@@ -396,6 +411,76 @@ struct PackEditorView: View {
         }
     }
 
+    // MARK: - Dropping new stickers
+
+    /// A drop adds to this pack. Capacity and the single-kind rule are checked up
+    /// front so the user gets a clear message instead of a half-open editor.
+    private func handleDrop(_ sources: [StickerSource]) {
+        guard let pack, let source = sources.first else { return }
+
+        // Only the first dropped item is handled; discard the rest cleanly.
+        for extra in sources.dropFirst() { StickerSourceStore.delete(extra) }
+
+        guard pack.stickers.count < Limits.maxStickers else {
+            StickerSourceStore.delete(source)
+            presentDropError("This pack is full — it holds at most \(Limits.maxStickers) stickers.")
+            return
+        }
+
+        if let packKind = pack.kind, packKind != dropKind(for: source) {
+            StickerSourceStore.delete(source)
+            presentDropError(
+                packKind == .animated
+                    ? "This pack holds videos. Add a video or GIF, or start a new pack."
+                    : "This pack holds photos. Add a photo, or start a new pack."
+            )
+            return
+        }
+
+        droppedSource = DroppedSource(source: source)
+    }
+
+    /// A source's kind: stills are static, GIFs and videos animated.
+    private func dropKind(for source: StickerSource) -> StickerKind {
+        switch source {
+        case .image: .static
+        case .video, .gif: .animated
+        }
+    }
+
+    private func presentDropError(_ message: String) {
+        activeAlert = .error(message)
+        errorPulse += 1
+    }
+
+    @ViewBuilder
+    private func droppedEditor(for source: StickerSource) -> some View {
+        switch source {
+        case .image:
+            StickerEditorView(source: source) { sticker in
+                addDropped(sticker)
+            }
+        case .video:
+            VideoTrimView(source: source) { sticker in
+                addDropped(sticker)
+            }
+        case .gif:
+            GIFTrimView(source: source) { sticker in
+                addDropped(sticker)
+            }
+        }
+    }
+
+    private func addDropped(_ sticker: StickerItem) {
+        do {
+            try store.add(sticker, to: packID)
+            selectionPulse += 1
+        } catch {
+            activeAlert = .error(error.localizedDescription)
+            errorPulse += 1
+        }
+    }
+
     // MARK: - Toolbar
 
     @ToolbarContentBuilder
@@ -430,7 +515,11 @@ struct PackEditorView: View {
         }
 
         if canExport {
-            PrimaryActionItem(title: "Add to WhatsApp") {
+            PrimaryActionItem(
+                title: "Add to WhatsApp",
+                systemImage: "plus.message",
+                iconOnly: true
+            ) {
                 showingExport = true
             }
         }
@@ -526,6 +615,25 @@ private func editorPreviewStore() -> (PackStore, UUID) {
     let store = PackStore()
     let pack = store.createPack(named: "Cats")
     return (store, pack.id)
+}
+
+/// A pack long enough to expose title truncation, with enough stickers that the
+/// export primary (now icon-only) is present.
+private func exportablePreviewStore() -> (PackStore, UUID) {
+    let store = PackStore()
+    let stickers = (0..<3).map { _ in
+        StickerItem(kind: .static, stickerData: Data(), previewData: Data())
+    }
+    let pack = StickerPack(name: "Weekend Trip Photos", stickers: stickers)
+    _ = store.importPack(pack)
+    return (store, pack.id)
+}
+
+#Preview("Exportable title") {
+    let (store, id) = exportablePreviewStore()
+    NavigationStack {
+        PackEditorView(store: store, packID: id)
+    }
 }
 
 #Preview("Light") {

@@ -132,6 +132,11 @@ struct AddStickerSheet: View {
     var body: some View {
         NavigationStack {
             content
+                .stickerDrop { sources in
+                    enqueueDropped(sources)
+                } onError: { message in
+                    presentError(message)
+                }
                 .navigationTitle("Add Stickers")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -382,6 +387,17 @@ struct AddStickerSheet: View {
                 ForEach(queue) { item in
                     queueRow(item)
                         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                        // Swipe-to-remove, mirroring the xmark button. No actions
+                        // are offered while creating, which disables the swipe.
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if !isProcessing {
+                                Button(role: .destructive) {
+                                    remove(item)
+                                } label: {
+                                    Label("Remove", systemImage: "trash")
+                                }
+                            }
+                        }
                 }
             }
             .listStyle(.plain)
@@ -599,6 +615,24 @@ struct AddStickerSheet: View {
             } catch {
                 presentError(error.localizedDescription)
             }
+        }
+        reportSkipped(skipped)
+    }
+
+    /// Files a dropped item (or items) into the queue, applying the same
+    /// single-kind filtering as the picker/Files paths.
+    @MainActor
+    private func enqueueDropped(_ sources: [StickerSource]) {
+        guard !sources.isEmpty else { return }
+
+        var skipped = 0
+        for source in sources {
+            guard queue.count < remaining else { break }
+            guard kindMatchesTarget(stickerKind(for: source)) else {
+                skipped += 1
+                continue
+            }
+            queue.append(QueueItem(source: source))
         }
         reportSkipped(skipped)
     }

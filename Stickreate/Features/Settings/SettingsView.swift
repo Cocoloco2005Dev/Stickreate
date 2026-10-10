@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Real, persisted settings backed by `SettingsStore.shared`.
 ///
@@ -8,6 +9,8 @@ struct SettingsView: View {
     @Bindable private var settings = SettingsStore.shared
 
     @State private var cacheNote: String?
+    @State private var logCount = DebugLog.shared.count
+    @State private var logNote: String?
 
     var body: some View {
         Form {
@@ -48,6 +51,33 @@ struct SettingsView: View {
             }
 
             Section {
+                LabeledContent("Log entries", value: "\(logCount)")
+
+                Button("Copy debug log") {
+                    copyLog()
+                }
+
+                ShareLink(item: DebugLog.shared.text()) {
+                    Text("Share log")
+                }
+
+                Button("Clear log", role: .destructive) {
+                    clearLog()
+                }
+
+                if let logNote {
+                    Label(logNote, systemImage: "doc.on.doc")
+                        .font(DS.TextRole.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(logNote)
+                }
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("Copy or share recent technical logs to help support. They contain only counts, sizes and timings — no images or personal data.")
+            }
+
+            Section {
                 LabeledContent("App", value: "Stickreate")
                 LabeledContent("Version", value: Bundle.main.shortVersion)
                 LabeledContent("Build", value: Bundle.main.buildNumber)
@@ -57,6 +87,7 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .haptic(.success, trigger: cacheNote)
+        .onAppear { logCount = DebugLog.shared.count }
     }
 
     private var cacheIcon: String {
@@ -68,6 +99,18 @@ struct SettingsView: View {
         cacheNote = freed > 0
             ? "Freed \(Self.formatted(freed))."
             : "Nothing to clear."
+    }
+
+    private func copyLog() {
+        UIPasteboard.general.string = DebugLog.shared.text()
+        logCount = DebugLog.shared.count
+        logNote = "Copied"
+    }
+
+    private func clearLog() {
+        DebugLog.shared.clear()
+        logCount = 0
+        logNote = "Log cleared."
     }
 
     private static func formatted(_ bytes: Int) -> String {

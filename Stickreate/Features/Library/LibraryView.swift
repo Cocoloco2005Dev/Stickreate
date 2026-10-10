@@ -13,6 +13,9 @@ struct LibraryView: View {
     @State private var folderFilter: FolderFilter = .all
     @State private var showingImporter = false
     @State private var importedMedia: ImportedMedia?
+    /// Sources waiting for the destination-pack sheet, so a multi-item drop is
+    /// offered one at a time instead of silently dropping the extras.
+    @State private var mediaQueue: [StickerSource] = []
     @State private var isImportingMedia = false
     @State private var showingImportedBanner = false
 
@@ -81,6 +84,11 @@ struct LibraryView: View {
                 mainContent
             }
             .animation(reduceMotion ? nil : DS.Motion.standard, value: showingImportedBanner)
+            .stickerDrop { sources in
+                enqueueMedia(sources)
+            } onError: { message in
+                presentError(message, as: .importFailed)
+            }
             .navigationTitle("Sticker Packs")
             .navigationDestination(for: UUID.self) { id in
                 PackEditorView(store: store, packID: id)
@@ -94,7 +102,7 @@ struct LibraryView: View {
             ) { result in
                 handleImport(result)
             }
-            .sheet(item: $importedMedia) { media in
+            .sheet(item: $importedMedia, onDismiss: mediaSheetDismissed) { media in
                 ImportMediaSheet(source: media.source, store: store) {
                     importedMedia = nil
                 }
@@ -558,13 +566,32 @@ struct LibraryView: View {
 
         do {
             let source = try await StickerSourceStore.importFile(at: url)
-            importedMedia = ImportedMedia(source: source)
+            enqueueMedia([source])
         } catch {
             presentError(
                 (error as? LocalizedError)?.errorDescription ?? error.localizedDescription,
                 as: .importFailed
             )
         }
+    }
+
+    /// A drop (or File) imports one or more sources, then offers each a
+    /// destination pack through `ImportMediaSheet`, one at a time.
+    private func enqueueMedia(_ sources: [StickerSource]) {
+        mediaQueue.append(contentsOf: sources)
+        advanceMediaQueue()
+    }
+
+    /// Presents the next queued source if no import sheet is already showing.
+    private func advanceMediaQueue() {
+        guard importedMedia == nil, let next = mediaQueue.first else { return }
+        importedMedia = ImportedMedia(source: next)
+    }
+
+    /// Drops the source whose sheet just closed, then offers the next one.
+    private func mediaSheetDismissed() {
+        if !mediaQueue.isEmpty { mediaQueue.removeFirst() }
+        advanceMediaQueue()
     }
 
     /// Transient, non-blocking confirmation that a pack file landed.

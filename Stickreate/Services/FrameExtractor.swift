@@ -126,9 +126,7 @@ enum FrameExtractor {
         let times = (0..<count).map {
             CMTime(seconds: lower + step * Double($0), preferredTimescale: 600)
         }
-        #if DEBUG
         let started = CFAbsoluteTimeGetCurrent()
-        #endif
         let task = Task.detached(priority: .userInitiated) {
             try await decodeFrames(
                 url: url,
@@ -162,6 +160,11 @@ enum FrameExtractor {
         ))
         assert(drift < 0.05, "Frame durations must sum to the requested span")
         #endif
+        Log.timing(
+            .extraction,
+            "video frames=\(frames.count) span=\(String(format: "%.2f", span))s fps=\(String(format: "%.1f", requestedFPS))",
+            ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
+        )
         return frames
     }
 
@@ -223,11 +226,10 @@ enum FrameExtractor {
         }
     }
 
-    /// Extracts frames (with their delays) from GIF data.
-    static func frames(fromGIF data: Data, maxFrames: Int = 30) throws -> [Frame] {
-        #if DEBUG
+    /// Extracts frames (with their delays) from GIF data. `maxFrames` is the cap;
+    /// it is high enough (80) that an edited GIF stays fluid.
+    static func frames(fromGIF data: Data, maxFrames: Int = 80) throws -> [Frame] {
         let started = CFAbsoluteTimeGetCurrent()
-        #endif
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             throw Failure.failed("Couldn't read this GIF.")
         }
@@ -271,6 +273,11 @@ enum FrameExtractor {
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
         print(String(format: "[FrameExtractor] gif %d frames in %.0fms", frames.count, ms))
         #endif
+        Log.timing(
+            .extraction,
+            "gif frames=\(frames.count) sourceFrames=\(total)",
+            ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
+        )
         return frames
     }
 

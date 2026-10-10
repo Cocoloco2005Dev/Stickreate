@@ -22,10 +22,10 @@ enum StickerEncoder {
     private static let animatedByteBudget = 480 * 1024
 
     /// Quality ladder (libwebp 0...100). The full frame set is tried at ~80
-    /// first; only if it exceeds the budget do we step down. The last step (25)
-    /// is the last resort for motion-heavy clips — without it a noisy 10 s clip
-    /// could exceed the budget at every attempt and hard-fail.
-    private static let animatedQualities: [Float] = [80, 60, 40, 25]
+    /// first; only if it exceeds the budget do we step down. The last step (15)
+    /// is the last resort for motion-heavy clips — the full ladder is walked
+    /// BEFORE any frame is dropped, so motion is preserved at the cost of quality.
+    private static let animatedQualities: [Float] = [80, 60, 40, 25, 15]
 
     /// libwebp animated method. Method 4 is the fast default; the native encoder
     /// already exploits inter-frame redundancy, so an expensive method is not
@@ -40,13 +40,19 @@ enum StickerEncoder {
     /// Animated sticker from frames, using libwebp's native `WebPAnimEncoder`
     /// (inter-frame compression) via `WebPAnimationEncoder`.
     ///
-    /// Quality first: the full frame set is walked down the whole quality ladder
-    /// before ANY frames are dropped. Only if the lowest quality still exceeds
-    /// the budget are frames dropped — gently at first (~75%, ~50%, then the
-    /// `minFramesAfterDrop` floor), and as a last resort down to two frames, so a
-    /// motion-heavy clip yields a sticker instead of hard-failing. The first
-    /// attempt that fits the budget is returned. Falls back to the per-frame
-    /// static encoder only when the C encoder itself fails.
+    /// Quality first, frames preserved: the full frame set is walked down the
+    /// whole quality ladder before ANY frames are dropped. Only if the lowest
+    /// quality still exceeds the budget are frames dropped — gently at first
+    /// (~75%, ~50%, then the `minFramesAfterDrop` floor), and as a last resort
+    /// down to `minFramesLastResort` frames (never fewer), so a motion-heavy clip
+    /// keeps its motion instead of collapsing to a handful of frames. The first
+    /// attempt that fits the budget is returned.
+    ///
+    /// Every normal attempt encodes with `minimize_size = false` (libwebp's fast
+    /// mode). Only if the entire fast ladder fails is a single last-resort pass
+    /// run over the smallest frame set with `minimize_size = true`, so the slow
+    /// multi-mode search can never dominate a normal encode. Falls back to the
+    /// per-frame static encoder only when the C encoder itself fails.
     ///
     /// The canvas stays exactly 512×512 (a WhatsApp requirement — dimensions are
     /// never reduced). Requires at least two frames; one frame is not a valid
@@ -88,14 +94,24 @@ enum StickerEncoder {
 
         let loop = max(0, loopCount)
 
-        // Full frame set first, then gently fewer frames (never below 2).
+        // Full frame set first, then gently fewer frames (never below
+        // `minFramesLastResort`).
         var candidates: [[Frame]] = [prepared]
         candidates.append(contentsOf: frameLadder(prepared))
 
-        // Worst-case progress schedule: every candidate at every quality. Each
+        // Attempt order: every candidate at every quality with the FAST encoder
+        // setting first; only then ONE last-resort pass over the smallest frame
+        // set with the slow `minimize_size` mode. Bounding the slow mode to a
+        // single candidate keeps "Optimizing WebP" from crawling.
+        var plans: [(frames: [Frame], minimizeSize: Bool)] = candidates.map { ($0, false) }
+        if let smallest = candidates.last {
+            plans.append((smallest, true))
+        }
+
+        // Worst-case progress schedule: every plan at every quality. Each
         // attempt reports its per-frame fraction; the bar is clamped below 1.0
         // and jumps to exactly 1.0 only once a payload is actually returned.
-        let plannedAttempts = max(1, candidates.count * animatedQualities.count)
+        let plannedAttempts = max(1, plans.count * animatedQualities.count)
         var attempt = 0
         // Monotonic + rate-limited: per-frame/per-attempt reports are clamped so
         // the bar never moves backwards, and intermediate frames inside the same
@@ -116,20 +132,22 @@ enum StickerEncoder {
         let started = CFAbsoluteTimeGetCurrent()
         #endif
 
-        for candidate in candidates {
+        for plan in plans {
             // Abort promptly on cancellation; a thrown CancellationError upstream
             // is treated by the UI as a silent cancel, so returning nil is safe.
             if Task.isCancelled { return nil }
+            let candidate = plan.frames
             let durations = targetMilliseconds(candidate, targetDuration: targetDuration)
             let images = candidate.map(\.image)
             for quality in animatedQualities {
                 if Task.isCancelled { return nil }
+                let attemptStarted = CFAbsoluteTimeGetCurrent()
                 let options = WebPAnimationEncoder.Options(
                     quality: quality,
                     method: animatedMethod,
                     keyframeInterval: 10,
                     loopCount: loop,
-                    minimizeSize: true
+                    minimizeSize: plan.minimizeSize
                 )
                 let data = WebPAnimationEncoder.encode(
                     frames: images,
@@ -148,17 +166,29 @@ enum StickerEncoder {
                 attempt += 1
                 // 480 KB target is below the 500 KB hard cap, so this also
                 // guarantees WhatsApp compliance.
+                let attemptMs = (CFAbsoluteTimeGetCurrent() - attemptStarted) * 1000
+                let minimizeTag = plan.minimizeSize ? 1 : 0
                 if let data, data.count <= budget {
+                    Log.timing(
+                        .encode,
+                        "webp ladder WON q=\(Int(quality)) min=\(minimizeTag) frames=\(images.count) bytes=\(data.count)",
+                        ms: attemptMs
+                    )
                     #if DEBUG
                     let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
                     print(String(
-                        format: "[StickerEncoder] animated total %.0fms: %d frames q=%d -> %d bytes",
-                        ms, images.count, Int(quality), data.count
+                        format: "[StickerEncoder] animated total %.0fms: %d frames q=%d min=%d -> %d bytes",
+                        ms, images.count, Int(quality), minimizeTag, data.count
                     ))
                     #endif
                     onProgress?(1.0)
                     return data
                 }
+                Log.timing(
+                    .encode,
+                    "webp ladder q=\(Int(quality)) min=\(minimizeTag) frames=\(images.count) bytes=\(data?.count ?? 0)",
+                    ms: attemptMs
+                )
             }
         }
 
@@ -166,6 +196,7 @@ enum StickerEncoder {
         let ms = (CFAbsoluteTimeGetCurrent() - started) * 1000
         print("[StickerEncoder] animated failed after \(Int(ms.rounded()))ms (exhausted quality + frame ladder)")
         #endif
+        Log.info(.encode, "webp ladder exhausted without a payload")
         // No `onProgress?(1.0)` here: a failed encode must never look finished.
         // In-flight progress is capped at 0.999 by `report`; the thrown
         // `Failure` in the caller drives the error UI.
@@ -194,6 +225,7 @@ enum StickerEncoder {
     /// Tries `.encodeCompressionQuality` from 1.0 down to 0.3 in 0.05 steps,
     /// returning the first WebP that fits `maxBytes`.
     private static func encode(_ image: UIImage, maxBytes: Int) -> Data? {
+        let started = CFAbsoluteTimeGetCurrent()
         for step in 0...14 {
             let quality = 1.0 - Double(step) * 0.05
             let data = autoreleasepool { () -> Data? in
@@ -204,9 +236,19 @@ enum StickerEncoder {
                 )
             }
             if let data, data.count <= maxBytes {
+                Log.timing(
+                    .encode,
+                    "static webp q=\(quality) bytes=\(data.count)",
+                    ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
+                )
                 return data
             }
         }
+        Log.timing(
+            .encode,
+            "static webp failed (exhausted quality ladder)",
+            ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
+        )
         return nil
     }
 
@@ -249,9 +291,11 @@ enum StickerEncoder {
     /// antialiased edges and drop shadows are never clipped.
     static let alphaMargin: CGFloat = 8
 
-    /// Alpha at or below this counts as transparent; a few noisy near-zero
-    /// samples must not defeat the "fully transparent" test.
-    private static let alphaThreshold: UInt8 = 8
+    /// Alpha at or below this counts as transparent. Raised from 8 to 16 so the
+    /// soft near-transparent halo Vision leaves around a subject does not extend
+    /// the fitted box (which would shrink the subject). A few noisy near-zero
+    /// samples still can't defeat the "fully transparent" test.
+    private static let alphaThreshold: UInt8 = 16
 
     /// Bounding box of the non-transparent pixels, in top-left image coordinates
     /// (matching the pixel buffer, so it feeds `cgImage.cropping(to:)` directly).
@@ -291,7 +335,7 @@ enum StickerEncoder {
             for y in 0..<height {
                 let row = y * bytesPerRow
                 for x in 0..<width {
-                    if buffer[row + x * 4 + 3] > alphaThreshold {
+                    if buffer[row + x * 4 + 3] >= alphaThreshold {
                         sawOpaque = true
                         if x < minX { minX = x }
                         if x > maxX { maxX = x }
@@ -340,13 +384,30 @@ enum StickerEncoder {
     /// Union of `alphaBounds` across `images`, or `nil` when none has meaningful
     /// transparency. Used to crop a whole animation to ONE shared box so the
     /// subject fills the canvas without per-frame scale jitter.
+    ///
+    /// Bounds are taken from the (already mask-cleaned) frames and outlier boxes
+    /// are dropped: a stray speck or leftover halo blob shows up as a box whose
+    /// area is wildly different from the median, and a raw union would let it
+    /// inflate the shared box and shrink the subject. The filter is generous
+    /// (8×) so a subject that gradually moves or changes size is never discarded.
+    /// ponytail: area-band heuristic, not connected-component analysis — swap in
+    /// blob filtering if specks ever survive the mask threshold.
     static func alphaUnion(of images: [UIImage]) -> CGRect? {
-        var union: CGRect?
-        for image in images {
-            guard let bounds = alphaBounds(of: image) else { continue }
-            union = union.map { $0.union(bounds) } ?? bounds
+        let bounds = images.compactMap { alphaBounds(of: $0) }
+        guard !bounds.isEmpty else { return nil }
+        func unionAll(_ rects: [CGRect]) -> CGRect {
+            rects.dropFirst().reduce(rects[0]) { $0.union($1) }
         }
-        return union
+        // Too few frames to tell an outlier from a real size change: keep all.
+        guard bounds.count >= 4 else { return unionAll(bounds) }
+        let areas = bounds.map { $0.width * $0.height }.sorted()
+        let median = areas[areas.count / 2]
+        guard median > 0 else { return unionAll(bounds) }
+        let kept = bounds.filter { bounds in
+            let area = bounds.width * bounds.height
+            return area >= median / 8 && area <= median * 8
+        }
+        return unionAll(kept.isEmpty ? bounds : kept)
     }
 
     // MARK: - Frame preparation
@@ -450,29 +511,33 @@ enum StickerEncoder {
 
     /// Frame count the size-budget ladder must never drop below for normal clips.
     /// Drops are gentle — keep ~75%, then ~50% — but never below this (or half
-    /// the set, whichever is larger), so a video never loses its motion. The hard
-    /// floor of 2 still applies upstream (a valid animation needs ≥ 2).
-    private static let minFramesAfterDrop = 24
+    /// the set, whichever is larger), so a video never loses its motion. Only the
+    /// genuinely-necessary last-resort set goes lower, and never below
+    /// `minFramesLastResort`.
+    private static let minFramesAfterDrop = 120
 
-    /// Frame-drop ladder: ~75%, then ~50%, then the gentle floor, then a set of
-    /// aggressively small last-resort sizes (still ≥ the hard floor of 2). Empty
-    /// only when the set is too small to downsample. The last-resort sizes matter
-    /// for motion-heavy clips that exceed the budget at every quality: two frames
-    /// is still a valid animation, and `resample` preserves the total duration.
+    /// Absolute floor for the last-resort frame set. Preserving motion is worth
+    /// more than fitting a noisy clip, so the ladder never drops below this.
+    private static let minFramesLastResort = 8
+
+    /// Frame-drop ladder: ~75%, then ~50%, then the `minFramesAfterDrop` floor,
+    /// then a last-resort set that degrades in steps but never below
+    /// `minFramesLastResort` frames. Empty only when the set is too small to
+    /// downsample. `resample` preserves the total duration, so a dropped frame
+    /// only reduces fluidity, never the animation length.
     private static func frameLadder(_ frames: [Frame]) -> [[Frame]] {
         let count = frames.count
-        guard count > 2 else { return [] }
+        guard count > minFramesLastResort else { return [] }
         let floor = min(count, max(minFramesAfterDrop, count / 2))
         var counts = Set<Int>()
         counts.insert(Int((Double(count) * 0.75).rounded()))
         counts.insert(max(floor, Int((Double(count) * 0.5).rounded())))
         counts.insert(floor)
         // Last resort, below the gentle floor: degrade in steps instead of
-        // jumping straight to two frames, and never give up while a valid
-        // two-frame animation could still fit.
-        counts.formUnion([48, 24, 12, 8, 4, 2])
+        // jumping to a tiny set, and never below `minFramesLastResort`.
+        counts.formUnion([120, 60, 30, 16, minFramesLastResort])
         let valid = counts
-            .filter { $0 >= 2 && $0 < count }
+            .filter { $0 >= minFramesLastResort && $0 < count }
             .sorted(by: >)
         return valid.map { resample(frames, to: $0) }
     }

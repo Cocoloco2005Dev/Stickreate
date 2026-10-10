@@ -78,6 +78,7 @@ enum PackArchive {
             .appendingPathExtension("zip")
         defer { try? FileManager.default.removeItem(at: temporary) }
 
+        let started = CFAbsoluteTimeGetCurrent()
         do {
             // Scope the archive so it is released (closing/flushing its backing
             // file) before we read the finished ZIP back off disk.
@@ -91,7 +92,13 @@ enum PackArchive {
                 try add(archive, path: "author.txt", data: Data(pack.publisher.utf8), compressed: true)
                 try add(archive, path: "title.txt", data: Data(pack.name.utf8), compressed: true)
             }
-            return try Data(contentsOf: temporary)
+            let data = try Data(contentsOf: temporary)
+            Log.timing(
+                .archive,
+                "export bytes=\(data.count) stickers=\(pack.stickers.count) entries=\(pack.stickers.count + 4)",
+                ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
+            )
+            return data
         } catch let failure as Failure {
             throw failure
         } catch {
@@ -103,10 +110,16 @@ enum PackArchive {
     /// legacy `.stickreatepack` JSON.
     static func importPack(from data: Data) throws -> StickerPack {
         guard !data.isEmpty else { throw Failure.invalid }
+        let started = CFAbsoluteTimeGetCurrent()
         let pack = data.starts(with: zipMagic)
             ? try importZIP(data)
             : try importLegacyJSON(data)
         try validate(pack)
+        Log.timing(
+            .archive,
+            "import bytes=\(data.count) stickers=\(pack.stickers.count)",
+            ms: (CFAbsoluteTimeGetCurrent() - started) * 1000
+        )
         return pack
     }
 

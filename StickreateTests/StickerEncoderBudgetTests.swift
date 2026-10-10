@@ -130,10 +130,12 @@ final class StickerEncoderBudgetTests: XCTestCase {
         )
     }
 
-    /// Motion-heavy input must still produce a valid sticker: the extended ladder
-    /// (quality 25 + last-resort frame counts down to 2) is what rescues it. If it
-    /// genuinely cannot fit, it must at least fail cleanly (no fake 100%).
-    func testNoisyFrameSetStillEncodes() {
+    /// Motion-heavy, incompressible input must never return an over-budget
+    /// payload. Under the preserve-frames policy the encoder prefers lowering
+    /// quality to dropping below `minFramesLastResort` frames, so a 512×512 noise
+    /// clip may legitimately not fit the 480 KB target — in that case it must
+    /// fail cleanly (no fake 100%) rather than collapse to a couple of frames.
+    func testNoisyFrameSetFitsOrFailsCleanly() {
         let frames = (0..<10).map { index in
             Frame(image: noiseImage(seed: UInt64(index) + 1), duration: 0.1)
         }
@@ -144,12 +146,11 @@ final class StickerEncoderBudgetTests: XCTestCase {
         )
         guard let data else {
             XCTAssertFalse(fractions.contains(1.0), "a failed noisy encode must never report 1.0")
-            XCTFail("noisy frame set should fit after the extended ladder")
+            XCTAssertTrue(fractions.allSatisfy { $0 <= 0.999 })
             return
         }
         XCTAssertLessThanOrEqual(data.count, Limits.maxAnimatedBytes)
-        // Worst-case motion must fit the 480 KB target, not just the 500 KB cap
-        // (the encoder returns the first candidate whose bytes fit this budget).
+        // If it did fit, it must meet the 480 KB target, not just the 500 KB cap.
         XCTAssertLessThanOrEqual(data.count, 480 * 1024)
     }
 }

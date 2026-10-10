@@ -39,6 +39,7 @@ enum StickerFactory {
         // Static creation runs only the compression + saving stages, so it emits
         // composed overall fractions from the compression slice of the ONE bar
         // (there is no extraction/cut to spend those earlier weights on).
+        let creationStarted = CFAbsoluteTimeGetCurrent()
         var progress = ProgressAccumulator()
         onStage?(.compressing(progress.update(0, in: .compression)))
         // Auto-fit a cut-out subject to fill the canvas; opaque photos and fully
@@ -58,6 +59,11 @@ enum StickerFactory {
             source: source
         )
         onStage?(.done)
+        Log.timing(
+            .encode,
+            "static creation total bytes=\(stickerData.count) preview=\(previewData.count)",
+            ms: (CFAbsoluteTimeGetCurrent() - creationStarted) * 1000
+        )
         return item
     }
 
@@ -239,7 +245,7 @@ enum StickerFactory {
         // extraction slice of the ONE overall bar.
         var extraction = ProgressAccumulator()
         onStage?(.extracting(extraction.update(0, in: .extraction)))
-        let all = try FrameExtractor.frames(fromGIF: data, maxFrames: 30)
+        let all = try FrameExtractor.frames(fromGIF: data, maxFrames: 80)
         onStage?(.extracting(extraction.update(1, in: .extraction)))
 
         let trimmed: [Frame]
@@ -325,6 +331,8 @@ enum StickerFactory {
     ) async throws -> StickerItem {
         guard !frames.isEmpty else { throw Failure.empty }
 
+        let creationStarted = CFAbsoluteTimeGetCurrent()
+
         // ONE overall 0…1 accumulator across cut → compress (extraction already
         // reported its 0 → ~0.30 slice), so the bar never resets or decreases.
         var progress = ProgressAccumulator()
@@ -333,16 +341,15 @@ enum StickerFactory {
         // keep the original frames for all.
         let usable: [Frame]
         if removeBackground {
-            #if DEBUG
-            let visionStarted = CFAbsoluteTimeGetCurrent()
-            #endif
+            let cutStarted = CFAbsoluteTimeGetCurrent()
             usable = await cutOut(frames, onProgress: { value in
                 onStage?(.cutting(progress.update(value, in: .cut)))
                 onProgress?(value)
             }) ?? frames
+            let cutMs = (CFAbsoluteTimeGetCurrent() - cutStarted) * 1000
+            Log.timing(.vision, "cut frames=\(frames.count)", ms: cutMs)
             #if DEBUG
-            let ms = (CFAbsoluteTimeGetCurrent() - visionStarted) * 1000
-            print(String(format: "[StickerFactory] vision %d frames in %.0fms", frames.count, ms))
+            print(String(format: "[StickerFactory] vision %d frames in %.0fms", frames.count, cutMs))
             #endif
         } else {
             usable = frames
@@ -350,7 +357,9 @@ enum StickerFactory {
 
         // One shared alpha-fit box for the whole clip: a cut-out subject fills
         // the canvas without per-frame scale jitter. No-op when opaque.
+        let fitStarted = CFAbsoluteTimeGetCurrent()
         let encoded = alphaFittedFrames(usable)
+        Log.timing(.vision, "alpha-fit frames=\(encoded.count)", ms: (CFAbsoluteTimeGetCurrent() - fitStarted) * 1000)
 
         // A cancelled creation must abort BEFORE the expensive encode, not just
         // discard its result. The caller treats a thrown CancellationError as a
@@ -394,6 +403,11 @@ enum StickerFactory {
             source: source
         )
         onStage?(.done)
+        Log.timing(
+            .encode,
+            "animated creation total frames=\(frameCount) bytes=\(stickerData.count)",
+            ms: (CFAbsoluteTimeGetCurrent() - creationStarted) * 1000
+        )
         return item
     }
 
@@ -471,7 +485,8 @@ enum StickerFactory {
     /// Returns nil (no cut) when Vision finds a subject on fewer than two anchors
     /// (i.e. essentially every pass failed), or when the work is cancelled — the
     /// caller then keeps the original frames. A frame whose anchor pass failed
-    /// reuses the previous mask, so one bad frame never drops the cut.
+    /// reuses the previous mask only for a bounded run (see `maskAssignments`),
+    /// so a vanished subject stops being painted instead of lingering as a ghost.
     private static func computeCutout(_ frames: [Frame], onProgress: ((Double) -> Void)?) async -> [Frame]? {
         guard !frames.isEmpty else { return nil }
 
@@ -494,14 +509,21 @@ enum StickerFactory {
                   !extraction.instances.isEmpty else {
                 continue
             }
-            masksByAnchor[anchor] = extraction.mask
+            // Clean the mask before it is ever composited: zero the faint
+            // near-transparent halo Vision leaves around the subject so it can't
+            // count as content and inflate the shared alpha-fit box.
+            masksByAnchor[anchor] = cleanedMask(extraction.mask) ?? extraction.mask
             successfulAnchors.append(anchor)
         }
 
         // No successful Vision pass at all: fall back to the untouched frames.
-        // A single success is still applied across the clip (better a static cut
-        // than none); `maskAssignments` carries it and reuses the previous mask
-        // when a later anchor fails.
+        // A single success still cuts its own frames; `maskAssignments` bounds how
+        // far that mask is reused when later anchors fail, and does not smear it
+        // backwards across a long leading gap.
+        Log.info(
+            .vision,
+            "cut masks succeeded=\(successfulAnchors.count)/\(anchors.count) frames=\(frames.count)"
+        )
         guard !successfulAnchors.isEmpty else { return nil }
         onProgress?(0.5)
 
@@ -531,14 +553,24 @@ enum StickerFactory {
         return result
     }
 
+    /// Max number of consecutive failed frames a stale mask may still be reused
+    /// for. After this many failures the frame is left uncut, so a subject that
+    /// vanished (a hand leaving the shot) stops being painted instead of showing
+    /// a lingering ghost silhouette.
+    static let maxMaskReuseAge = 3
+
     /// Assigns each frame the index of the computed mask it should use.
     ///
     /// Anchors are scheduled at `0, stride, 2*stride, …`. A frame in an anchor's
     /// bucket `[anchor, anchor + stride)` uses the most recent anchor at or
     /// before it that succeeded, so a failed anchor's frames reuse the previous
-    /// mask (temporal smoothing). Frames before the first success reuse it (no
-    /// leading-uncut flash). Returns all-`nil` only when no anchor succeeded.
-    /// Pure: no Vision, no images — unit-testable.
+    /// mask (temporal smoothing). Reuse is bounded: once `maxMaskReuseAge`
+    /// consecutive frames have failed, those frames are left uncut (`nil`) rather
+    /// than showing a stale silhouette. A short leading gap (fewer than
+    /// `maxMaskReuseAge` frames before the first success) back-fills that first
+    /// mask, but a longer gap is left uncut — no stale mask smeared across it.
+    /// Returns all-`nil` only when no anchor succeeded. Pure: no Vision, no
+    /// images — unit-testable.
     static func maskAssignments(
         frameCount: Int,
         stride: Int,
@@ -549,19 +581,87 @@ enum StickerFactory {
         }
         let succeeded = Set(successfulAnchors)
         var result = [Int?](repeating: nil, count: frameCount)
-        // Seed with the first success so leading frames (before the first
-        // successful anchor) are cut with it instead of flashing the background.
-        var current: Int? = successfulAnchors.first
+        // Walk anchor buckets left→right. A successful anchor resets the run of
+        // failed frames; a failed bucket reuses the last mask only while the run
+        // is shorter than `maxMaskReuseAge`.
+        var current: Int?
+        var failedFrames = 0
         var anchor = 0
         while anchor < frameCount {
-            if succeeded.contains(anchor) { current = anchor }
-            if let mask = current {
-                let end = min(anchor + stride, frameCount)
-                for index in anchor..<end { result[index] = mask }
+            let end = min(anchor + stride, frameCount)
+            if succeeded.contains(anchor) {
+                current = anchor
+                failedFrames = 0
+                for index in anchor..<end { result[index] = anchor }
+            } else if let mask = current {
+                for index in anchor..<end {
+                    if failedFrames < maxMaskReuseAge { result[index] = mask }
+                    failedFrames += 1
+                }
             }
             anchor += stride
         }
+        // Bounded leading back-fill: cover at most `maxMaskReuseAge - 1` frames
+        // before the first success so a short gap doesn't flash, but a long
+        // leading gap is left uncut.
+        if let first = successfulAnchors.min() {
+            var index = first - 1
+            var distance = 1
+            while index >= 0, distance < maxMaskReuseAge, result[index] == nil {
+                result[index] = first
+                index -= 1
+                distance += 1
+            }
+        }
         return result
+    }
+
+    /// Mask value at or below which a pixel is treated as background. Vision's
+    /// masks fade out over a soft band around the subject; those faint values
+    /// would otherwise composite to near-transparent halo pixels that inflate the
+    /// alpha-fit box.
+    static let maskThreshold: UInt8 = 16
+
+    /// Zeroes every pixel of a single-channel Vision mask below `threshold`, so
+    /// the soft halo (and any faint speck) around the subject is removed before
+    /// it is composited. Returns a new 8-bit grayscale `CGImage`, or `nil` if the
+    /// mask can't be rendered. Pure pixel pass — unit-testable without Vision.
+    static func cleanedMask(_ mask: CGImage, threshold: UInt8 = StickerFactory.maskThreshold) -> CGImage? {
+        let width = mask.width
+        let height = mask.height
+        guard width > 0, height > 0 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(
+                data: raw.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return false }
+            context.draw(mask, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        for index in pixels.indices where pixels[index] < threshold {
+            pixels[index] = 0
+        }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
     }
 
     /// Composites `image` through a single-channel grayscale `mask` (white =

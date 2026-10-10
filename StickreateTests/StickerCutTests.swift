@@ -3,7 +3,7 @@ import XCTest
 
 /// Unit tests for the pure frame→mask assignment that drives the motion-following
 /// Intelligent Cut. Vision itself is not exercised here (device-only); this pins
-/// the subsample + nearest-mask-reuse + failure-reuse-previous rules.
+/// the subsample + nearest-mask-reuse + bounded-reuse + leading-gap rules.
 final class StickerCutTests: XCTestCase {
 
     /// With every anchor succeeding, each frame uses its bucket's anchor.
@@ -25,12 +25,44 @@ final class StickerCutTests: XCTestCase {
         )
     }
 
-    /// Leading frames before the first successful anchor reuse that first mask
-    /// (no background flash at the start).
-    func testLeadingFramesReuseFirstSuccess() {
-        let expected: [Int?] = [6, 6, 6, 6, 6, 6, 6, 6, 6]
+    /// Leading frames within `maxMaskReuseAge` of the first success back-fill it
+    /// (short gap, no flash); a longer leading gap is left uncut rather than
+    /// smearing a future silhouette backwards.
+    func testLeadingFramesBackFillOnlyShortGap() {
+        // First success at 6; only frames 4 and 5 are within the reuse age, so
+        // frames 0...3 stay uncut.
+        let expected: [Int?] = [nil, nil, nil, nil, 6, 6, 6, 6, 6]
         XCTAssertEqual(
             StickerFactory.maskAssignments(frameCount: 9, stride: 3, successfulAnchors: [6]),
+            expected
+        )
+    }
+
+    /// A short leading gap (fewer frames than the reuse age) is back-filled.
+    func testShortLeadingGapBackFillsFirstSuccess() {
+        let expected: [Int?] = [2, 2, 2, 2]
+        XCTAssertEqual(
+            StickerFactory.maskAssignments(frameCount: 4, stride: 1, successfulAnchors: [2]),
+            expected
+        )
+    }
+
+    /// After `maxMaskReuseAge` consecutive failed frames the stale mask is
+    /// dropped and the remaining frames are left uncut (no ghost silhouette).
+    func testBoundedReuseStopsAfterMaxFailures() {
+        let expected: [Int?] = [0, 0, 0, 0, nil, nil, nil, nil, nil, nil]
+        XCTAssertEqual(
+            StickerFactory.maskAssignments(frameCount: 10, stride: 1, successfulAnchors: [0]),
+            expected
+        )
+    }
+
+    /// A failed run longer than the reuse age, followed by a fresh success,
+    /// recovers: the stale run is bounded, the new success resets the counter.
+    func testReuseResetsAfterANewSuccess() {
+        let expected: [Int?] = [0, 0, 0, 0, nil, nil, nil, 7, 7, 7]
+        XCTAssertEqual(
+            StickerFactory.maskAssignments(frameCount: 10, stride: 1, successfulAnchors: [0, 7]),
             expected
         )
     }

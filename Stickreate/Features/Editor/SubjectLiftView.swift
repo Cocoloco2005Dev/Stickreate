@@ -6,11 +6,12 @@ import VisionKit
 /// Dedicated subject-lift step built on VisionKit.
 ///
 /// VisionKit detects **every** subject in the photo. The user picks one by
-/// tapping it on the image (`interaction.subject(at:)`), tapping its numbered
-/// chip, or press-and-holding it (Photos-like). The chosen subject's
-/// background-removed cut-out is rendered in the preview box, and a
-/// Cut-out / Original switch shows what is being cut from. Confirming hands the
-/// cut-out to the editor, which adopts it as its working image directly.
+/// tapping it on the image (`interaction.subject(at:)`) or tapping its numbered
+/// chip. VisionKit's own press-and-hold lift is deliberately disabled (a touch
+/// shield) so only a single, explicitly chosen subject is ever previewed. The
+/// chosen subject's background-removed cut-out is rendered in the preview box,
+/// and a Cut-out / Original switch shows what is being cut from. Confirming
+/// hands the cut-out to the editor, which adopts it as its working image.
 @MainActor
 struct SubjectLiftView: View {
     /// The (pristine) working image to analyze.
@@ -309,15 +310,10 @@ final class SubjectLiftModel {
         }
     }
 
-    /// Selects a subject instance reported by a tap or a press-and-hold highlight.
+    /// Selects a subject instance reported by a tap on the image.
     func selectSubject(_ subject: ImageAnalysisInteraction.Subject) {
         guard let index = subjects.firstIndex(of: subject) else { return }
         select(index)
-    }
-
-    func selectHighlighted(_ highlighted: Set<ImageAnalysisInteraction.Subject>) {
-        guard let subject = highlighted.first else { return }
-        selectSubject(subject)
     }
 
     /// Renders the cut-out for the selected subject only (one single-subject set
@@ -373,18 +369,36 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
             imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
 
+        // Keep `.imageSubject` so the interaction still detects subjects and can
+        // render a single-subject cut-out (`subjects` / `subject(at:)` /
+        // `image(for:)`). VisionKit attaches its own press-and-hold lift gestures
+        // to this view, though, and that native presentation can fuse several
+        // subjects. A transparent shield above the image view swallows touches so
+        // those native gestures never fire — only our tap + chips select.
         let interaction = ImageAnalysisInteraction()
         interaction.preferredInteractionTypes = .imageSubject
         imageView.addInteraction(interaction)
         model.interaction = interaction
 
-        // Tap-to-select: coexist with VisionKit's own (press-and-hold) gestures.
+        let shield = UIView()
+        shield.backgroundColor = .clear
+        shield.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(shield)
+        NSLayoutConstraint.activate([
+            shield.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            shield.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            shield.topAnchor.constraint(equalTo: container.topAnchor),
+            shield.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        // Tap-to-select: maps a tap to the subject under it. It lives on the
+        // shield (not the image view) so VisionKit's own gestures can't run.
         let tap = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleTap(_:))
         )
-        tap.delegate = context.coordinator
-        imageView.addGestureRecognizer(tap)
+        shield.addGestureRecognizer(tap)
+        context.coordinator.imageView = imageView
 
         context.coordinator.analyze(image: image, interaction: interaction)
         return container
@@ -397,9 +411,11 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject {
         private let model: SubjectLiftModel
         private var task: Task<Void, Never>?
+        /// The image view the interaction is installed on, for tap coordinate mapping.
+        weak var imageView: UIImageView?
 
         init(model: SubjectLiftModel) {
             self.model = model
@@ -408,21 +424,14 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
         /// A tap selects the subject under the finger, if any.
         @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
             guard let interaction = model.interaction,
-                  let view = recognizer.view else { return }
-            let point = recognizer.location(in: view)
+                  let imageView else { return }
+            let point = recognizer.location(in: imageView)
             let model = self.model
             Task { @MainActor in
                 if let subject = await interaction.subject(at: point) {
                     model.selectSubject(subject)
                 }
             }
-        }
-
-        func gestureRecognizer(
-            _ gestureRecognizer: UIGestureRecognizer,
-            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
-        ) -> Bool {
-            true
         }
 
         func analyze(image: UIImage, interaction: ImageAnalysisInteraction) {
@@ -458,22 +467,6 @@ private struct SubjectLiftCanvas: UIViewRepresentable {
                 if found.isEmpty { found = await interaction.subjects }
                 model.setSubjects(found)
                 model.isAnalyzing = false
-
-                // Press-and-hold: VisionKit highlights the subject under the
-                // finger; select it so its cut-out previews automatically.
-                // Bounded so the task always ends even without dismantling.
-                var lastHighlighted: Set<ImageAnalysisInteraction.Subject> = []
-                for _ in 0..<300 {
-                    if Task.isCancelled { return }
-                    let highlighted = interaction.highlightedSubjects
-                    if highlighted.isEmpty {
-                        lastHighlighted = []
-                    } else if highlighted != lastHighlighted {
-                        lastHighlighted = highlighted
-                        model.selectHighlighted(highlighted)
-                    }
-                    try? await Task.sleep(for: .seconds(0.4))
-                }
             }
         }
 

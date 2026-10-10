@@ -106,6 +106,32 @@ enum StickerSourceStore {
         throw Failure.unsupported
     }
 
+    /// Imports raw dropped bytes (e.g. a cut-out with no file) by staging them to
+    /// a temp file and reusing `importFile`. The extension is sniffed so GIFs stay
+    /// animated instead of being flattened to a still.
+    static func importData(_ data: Data) async throws -> StickerSource {
+        guard !data.isEmpty else { throw Failure.empty }
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(fileExtension(for: data) ?? "png")
+        do {
+            try data.write(to: temporary, options: .atomic)
+        } catch {
+            throw Failure.failed(error.localizedDescription)
+        }
+        return try await importFile(at: temporary)
+    }
+
+    /// Sniffs the image container's own UTType so the staged file gets a matching
+    /// extension (a `.gif` stays a GIF, a JPEG stays a JPEG).
+    private static func fileExtension(for data: Data) -> String? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let type = CGImageSourceGetType(source) as String?,
+              let utType = UTType(type),
+              let ext = utType.preferredFilenameExtension else { return nil }
+        return ext
+    }
+
     /// Saves an upright still image as a source file.
     static func saveImage(_ image: UIImage, id: UUID) throws -> StickerSource {
         let upright = image.upNormalized() ?? image

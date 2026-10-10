@@ -43,6 +43,10 @@ enum WhatsAppExporter {
     /// unchanged.
     static func export(_ pack: StickerPack) throws {
         try pack.validate()
+        Log.info(
+            .export,
+            "validation passed stickers=\(pack.stickers.count) mixed=\(pack.isMixed)"
+        )
         guard !pack.isMixed else {
             throw Failure.invalid("This pack mixes static and animated stickers. Export each kind separately.")
         }
@@ -81,6 +85,10 @@ enum WhatsAppExporter {
         guard let trayPNG = StickerEncoder.trayIcon(from: preview) else {
             throw Failure.invalid("Couldn't build this pack's tray icon.")
         }
+        Log.info(
+            .export,
+            "export kind=\(kind) stickers=\(stickers.count) tray=\(trayPNG.count)B"
+        )
 
         let isAnimated = kind == .animated
         let stickerJSON: [[String: Any]] = stickers.map { sticker in
@@ -107,6 +115,7 @@ enum WhatsAppExporter {
               let data = try? JSONSerialization.data(withJSONObject: payload) else {
             throw Failure.invalid("Couldn't build the pack data.")
         }
+        Log.info(.export, "payload bytes=\(data.count)")
 
         // Deliberately NOT gated on `canOpenURL("whatsapp://")`: inside
         // LiveContainer that query returns false even though opening the scheme
@@ -114,24 +123,60 @@ enum WhatsAppExporter {
         // the source of truth; if WhatsApp is missing, nothing happens.
         //
         // Error 1000 is an undocumented catch-all caused by a pasteboard/open
-        // race ("error, then it works"): clear stale entries, write, then give
-        // the pasteboard a beat before opening WhatsApp exactly once.
-        UIPasteboard.general.items = []
-        let pasteboardItem: [String: Any] = [pasteboardType: data]
-        UIPasteboard.general.setItems(
-            [pasteboardItem],
-            options: [.localOnly: true, .expirationDate: Date(timeIntervalSinceNow: 60)]
-        )
-
-        openWhatsApp(after: 0.7)
+        // race ("error, then it works"). Kill its causes: write the pasteboard
+        // exactly once (no separate clear that races WhatsApp's read), serialize
+        // exports so only one open is ever in flight, give WhatsApp a
+        // size-adaptive beat to read, then retry the write+open once if the open
+        // reports failure.
+        openTask?.cancel()
+        openTask = Task { @MainActor in
+            await runOpenSequence(payload: data)
+        }
     }
 
-    /// Opens WhatsApp's sticker importer once, after `delay`, on the main actor.
-    private static func openWhatsApp(after delay: TimeInterval) {
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(delay))
-            guard let url = URL(string: "whatsapp://stickerPack") else { return }
-            UIApplication.shared.open(url, options: [:], completionHandler: nil)
+    /// In-flight write+open sequence. Replaced on each export so a second export
+    /// cancels the previous one instead of firing a second `open`.
+    private static var openTask: Task<Void, Never>?
+
+    /// Writes the pasteboard and opens WhatsApp after an adaptive delay, retrying
+    /// the whole write+open once if the open completion reports failure.
+    private static func runOpenSequence(payload: Data, isRetry: Bool = false) async {
+        writePasteboard(payload)
+        let delay = openDelay(forByteCount: payload.count)
+        Log.info(.export, "open scheduled delay=\(delay)s retry=\(isRetry)")
+        try? await Task.sleep(for: .seconds(delay))
+        guard !Task.isCancelled, let url = URL(string: "whatsapp://stickerPack") else { return }
+
+        let opened = await open(url)
+        Log.info(.export, "open result success=\(opened) retry=\(isRetry)")
+        if !opened, !isRetry, !Task.isCancelled {
+            await runOpenSequence(payload: payload, isRetry: true)
+        }
+    }
+
+    /// Single pasteboard transaction: one write, `.localOnly` so it never syncs,
+    /// and a 120 s expiration so a late WhatsApp read doesn't hit an expired entry.
+    private static func writePasteboard(_ payload: Data) {
+        UIPasteboard.general.setItems(
+            [[pasteboardType: payload]],
+            options: [.localOnly: true, .expirationDate: Date(timeIntervalSinceNow: 120)]
+        )
+        Log.info(.export, "pasteboard write done bytes=\(payload.count)")
+    }
+
+    /// Size-adaptive pre-open delay, bounded to 0.4–1.2 s: small packs open
+    /// sooner, multi-MB packs get longer for WhatsApp to read the pasteboard.
+    private static func openDelay(forByteCount bytes: Int) -> TimeInterval {
+        let scaled = 0.4 + Double(bytes) / 4_000_000 * 0.8
+        return min(max(scaled, 0.4), 1.2)
+    }
+
+    /// Opens WhatsApp's sticker importer and reports whether the system accepted it.
+    private static func open(_ url: URL) async -> Bool {
+        await withCheckedContinuation { continuation in
+            UIApplication.shared.open(url, options: [:]) { success in
+                continuation.resume(returning: success)
+            }
         }
     }
 

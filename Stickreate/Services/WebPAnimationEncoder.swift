@@ -28,14 +28,16 @@ enum WebPAnimationEncoder {
         /// 0 = loop forever.
         var loopCount: Int = 0
         /// Try both dispose methods / lossless candidates to shave bytes (slower).
-        var minimizeSize: Bool = true
+        /// Default OFF: this is the slowest libwebp mode and is only enabled as a
+        /// last-resort fallback by the encode ladder.
+        var minimizeSize: Bool = false
 
         init(
             quality: Float = 80,
             method: Int = 4,
             keyframeInterval: Int = 10,
             loopCount: Int = 0,
-            minimizeSize: Bool = true
+            minimizeSize: Bool = false
         ) {
             self.quality = quality
             self.method = method
@@ -231,6 +233,11 @@ enum WebPAnimationEncoder {
         defer { WebPDataClear(&webpData) }
         guard WebPAnimEncoderAssemble(encoder, &webpData) != 0 else { return nil }
         guard let bytes = webpData.bytes, webpData.size > 0 else { return nil }
-        return Data(bytes: bytes, count: webpData.size)
+        let data = Data(bytes: bytes, count: webpData.size)
+        Log.info(
+            .encode,
+            "native animated encode frames=\(frames.count) bytes=\(data.count) q=\(Int(options.quality))"
+        )
+        return data
     }
 }

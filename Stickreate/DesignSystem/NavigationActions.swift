@@ -45,16 +45,33 @@ struct CancelActionItem: ToolbarContent {
 }
 
 /// Trailing primary action. Exactly one per screen, always `.glassProminent`.
+///
+/// `systemImage` adds an icon so the action is recognizable. `iconOnly` collapses
+/// it to just that icon (with `title` kept as the accessibility label) so a
+/// crowded trailing bar never truncates the navigation title.
 struct PrimaryActionItem: ToolbarContent {
     let title: String
+    var systemImage: String? = nil
+    var iconOnly: Bool = false
     var isDisabled: Bool = false
     let action: () -> Void
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .confirmationAction) {
-            Button(title, action: action)
-                .buttonStyle(.glassProminent)
-                .disabled(isDisabled)
+            Button(action: action) {
+                if let systemImage {
+                    if iconOnly {
+                        Image(systemName: systemImage)
+                    } else {
+                        Label(title, systemImage: systemImage)
+                    }
+                } else {
+                    Text(title)
+                }
+            }
+            .buttonStyle(.glassProminent)
+            .disabled(isDisabled)
+            .accessibilityLabel(title)
         }
     }
 }

@@ -17,8 +17,13 @@ struct StickerPreviewSheet: View {
     var onDelete: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var isPlaying = true
+    /// The corner transport is hidden by default; tapping the sticker shows it,
+    /// it fades out ~2 s later, and it stays visible while paused.
+    @State private var controlsVisible = false
+    @State private var hideTask: Task<Void, Never>?
 
     private var staticImage: UIImage? {
         UIImage(data: item.previewData)
@@ -51,6 +56,10 @@ struct StickerPreviewSheet: View {
                 }
             }
             .safeAreaInset(edge: .bottom) { bottomBar }
+            .onAppear {
+                if item.kind == .animated { revealControls() }
+            }
+            .onDisappear { hideTask?.cancel() }
         }
     }
 
@@ -88,30 +97,87 @@ struct StickerPreviewSheet: View {
             }
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.large, style: .continuous))
-            .overlay {
-                if item.kind == .animated {
+            .overlay(alignment: .bottomTrailing) {
+                if showPlayPause {
                     playPauseButton
+                        .padding(DS.Space.md)
+                        .transition(.opacity)
                 }
             }
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.large, style: .continuous))
+            .onTapGesture { toggleControls() }
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-            .accessibilityElement(children: .ignore)
+            .accessibilityElement(children: .contain)
             .accessibilityLabel(item.kind == .animated ? "Animated sticker preview" : "Sticker preview")
         }
     }
 
-    /// Large, centered play/pause like a video player. Control layer → glass.
+    /// Small corner transport — control layer → glass, kept out of the sticker's
+    /// center so the preview stays readable.
     private var playPauseButton: some View {
         Button {
-            isPlaying.toggle()
+            togglePlayback()
         } label: {
             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                .font(.title.weight(.bold))
-                .frame(width: 72, height: 72)
+                .font(.body.weight(.bold))
+                .frame(width: DS.minTapTarget, height: DS.minTapTarget)
                 .contentShape(Circle())
         }
         .buttonStyle(.glass)
         .accessibilityLabel(isPlaying ? "Pause" : "Play")
         .accessibilityHint("Stops or restarts the animated preview")
+    }
+
+    /// Animated stickers show the transport while it's revealed or while paused.
+    private var showPlayPause: Bool {
+        item.kind == .animated && (controlsVisible || !isPlaying)
+    }
+
+    // MARK: - Transport visibility
+
+    private func revealControls() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            controlsVisible = true
+        }
+        scheduleAutoHide()
+    }
+
+    /// Fades the transport out after ~2 s — but never while paused.
+    private func scheduleAutoHide() {
+        hideTask?.cancel()
+        guard isPlaying else { return }
+        hideTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+                controlsVisible = false
+            }
+        }
+    }
+
+    private func toggleControls() {
+        guard item.kind == .animated else { return }
+        if controlsVisible {
+            hideTask?.cancel()
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                controlsVisible = false
+            }
+        } else {
+            revealControls()
+        }
+    }
+
+    private func togglePlayback() {
+        isPlaying.toggle()
+        if isPlaying {
+            scheduleAutoHide()
+        } else {
+            // Paused → keep the transport visible.
+            hideTask?.cancel()
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                controlsVisible = true
+            }
+        }
     }
 
     private var details: some View {
@@ -313,6 +379,14 @@ private final class PlaybackAnimatedImageView: SDAnimatedImageView {
 
 private func previewStickerItem() -> StickerItem {
     StickerItem(kind: .static, emojis: ["😺"], stickerData: Data(), previewData: Data())
+}
+
+private func previewAnimatedStickerItem() -> StickerItem {
+    StickerItem(kind: .animated, emojis: ["😺"], stickerData: Data(), previewData: Data())
+}
+
+#Preview("Animated transport") {
+    StickerPreviewSheet(item: previewAnimatedStickerItem())
 }
 
 #Preview("Light") {
